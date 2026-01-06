@@ -8,6 +8,38 @@ import database
 import tempfile
 import re
 
+
+# `lapie` seems to be renamed every version or so. Map that out here. Most installations will have
+# the version name at the end of their path, so we just look at the radiant dir for a hint. The user
+# can override this setting with a RADIANTVERSION env variable
+known_versions = [ "2.2", "3.1", "2023", "2024", "2025" ]
+RADIANT_DIR = os.environ.get("RADIANTDIR")
+radiant_version= os.environ.get("RADIANTVERSION", None)
+
+if radiant_version is None:
+    for version in known_versions:
+        if RADIANT_DIR.find(version) > -1:
+            radiant_version = version
+
+if radiant_version is None:
+    radiant_version = "3.1"
+
+if radiant_version == "2023":
+    tcltool = "lark"
+    tcltool_log = "radiantc.log"
+    dev_enable_name = "RAT_DEV_ENABLE"
+elif radiant_version == "2025" or radiant_version == "2024":
+    # For whatever reason; these versions of the tool have a dependency on libqt 3 so finding a way to run it
+    # might be challenging; even in a container environment. Included here for completeness; recommend running 2023
+    # for tasks requiring this instead.
+    tcltool = "labrus"
+    tcltool_log = "radiantc.log"
+    dev_enable_name = "RAT_DEV_ENABLE"    
+else:
+    tcltool = "lapie"
+    tcltool_log = "lapie.log"
+    dev_enable_name = "LATCL_DEV_ENABLE"    
+
 def run(commands, workdir=None):
     """Run a list of Tcl commands, returning the output as a string"""
     rcmd_path = path.join(database.get_oxide_root(), "radiant_cmd.sh")
@@ -18,11 +50,11 @@ def run(commands, workdir=None):
         for c in commands:
             f.write(c + '\n')
     env = os.environ.copy()
-    env["LATCL_DEV_ENABLE"] = "1"
-    result = subprocess.run(["bash", rcmd_path, "lapie", scriptfile], cwd=workdir, env=env).returncode
+    env[dev_enable_name] = "1"
+    result = subprocess.run(["bash", rcmd_path, tcltool, scriptfile], cwd=workdir, env=env).returncode
     # meh, fails sometimes
     # assert result == 0, "lapie returned non-zero status code {}".format(result)
-    outfile = path.join(workdir, 'lapie.log')
+    outfile = path.join(workdir, tcltool_log)
     output = ""
     with open(outfile, 'r') as f:
         for line in f:
@@ -63,8 +95,10 @@ class NodeInfo:
         self.downhill_pips = []
         self.pins = []
 
-node_re = re.compile(r'^\[\s*(\d+)\]\s*([A-Z0-9a-z_]+)')
-pip_re = re.compile(r'^([A-Z0-9a-z_]+) (<--|<->|-->) ([A-Z0-9a-z_]+) \(Flags: ...., (\d+)\) \(Buffer: ([A-Z0-9a-z_]+)\)')
+node_re = re.compile(r'^\[\s*\d+\]\s*([A-Z0-9a-z_]+)')
+alias_node_re = re.compile(r'^\s*Alias name = ([A-Z0-9a-z_]+)')
+pip_re = re.compile(r'^([A-Z0-9a-z_]+) (<--|<->|-->) ([A-Z0-9a-z_]+) \(Flags: .+, (\d+)\) \(Buffer: ([A-Z0-9a-z_]+)\)')
+#R1C77_JLFTRMFAB7_OSC_CORE <-- R1C75_JCIBMUXOUTA7 (Flags: ----j, 0) (Buffer: b_ciboutbuf)
 pin_re = re.compile(r'^Pin  : ([A-Z0-9a-z_]+)/([A-Z0-9a-z_]+) \(([A-Z0-9a-z_]+)\)')
 
 def parse_node_report(rpt):
@@ -72,15 +106,20 @@ def parse_node_report(rpt):
     nodes = []
     for line in rpt.split('\n'):
         sl = line.strip()
-        nm = node_re.match(sl)
-        if nm:
-            curr_node = NodeInfo(nm.group(2))
-            nodes.append(curr_node)
-            continue
+        print("Node line", sl)
+        for re in [node_re, alias_node_re]:
+            nm = re.match(sl)
+            if nm:
+                curr_node = NodeInfo(nm.group(1))
+                print(f"Curr node {nm.group(1)}")
+                nodes.append(curr_node)
+                continue
+            
         pm = pip_re.match(sl)
         if pm:
             flg = int(pm.group(4))
             btyp = pm.group(5)
+            print(f"Found connection {pm}")
             if pm.group(2) == "<--":
                 curr_node.uphill_pips.append(
                     PipInfo(pm.group(3), pm.group(1), False, flg, btyp)
@@ -100,10 +139,12 @@ def parse_node_report(rpt):
                 assert False
             continue
         qm = pin_re.match(sl)
-        if qm:
+        print("Match", qm, curr_node)
+        if qm and curr_node:
             curr_node.pins.append(
                 PinInfo(qm.group(1), qm.group(2), curr_node.name, qm.group(3))
             )
+    print([x.name for x in nodes])
     return nodes
 
 
@@ -115,7 +156,7 @@ def get_node_data(udb, nodes, regex=False):
         nodelist = nodes[0]
     elif len(nodes) > 1:
         nodelist = "[list {}]".format(" ".join(nodes))
-    run_with_udb(udb, ['dev_report_node -file {} [get_nodes {}{}]'.
+    run_with_udb(udb, ['dev_report_node -file {} [dev_get_nodes {}{}]'.
         format(nodefile, "-re " if regex else "", nodelist)])
     with open(nodefile, 'r') as nf:
         return parse_node_report(nf.read())
