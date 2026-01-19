@@ -18,32 +18,6 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 pio_names = ["A", "B"]
 
 
-def handle_ctrl_c(loop):
-    print("\nReceived Ctrl+C. Printing task stacks and shutting down gracefully...")
-
-    # Get all running tasks
-    try:
-        # In Python 3.7+, use asyncio.all_tasks(loop)
-        # For compatibility with older versions (pre-3.7), you might need asyncio.Task.all_tasks()
-        all_tasks = asyncio.all_tasks(loop)
-    except AttributeError:
-        # Fallback for older Python versions if needed, though asyncio.run is 3.7+
-        all_tasks = asyncio.Task.all_tasks()
-
-        # Print stack for each task
-    for task in all_tasks:
-        if not task.done():
-            print(f"Task: {task.get_name()}")
-            # print_stack directly prints to stderr, but get_stack returns the frame objects
-            #traceback.print_stack(task.get_stack()) # Can use if you need more control
-            task.print_stack(file=sys.stderr, limit=100)  # Prints to standard error
-            print("-" * 20)
-
-    # Cancel all tasks to allow the program to exit cleanly
-    for task in all_tasks:
-        task.cancel()
-
-
 def create_config_from_pad(pad, device):
     pin = pad["pins"][0]
     pio = pad["pio"]
