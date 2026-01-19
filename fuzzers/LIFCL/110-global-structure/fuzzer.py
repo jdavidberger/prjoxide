@@ -1,18 +1,27 @@
 import database
 import lapie
 import json
-from fuzzconfig import FuzzConfig
+from fuzzconfig import FuzzConfig, should_fuzz_platform
 from tiles import pos_from_name
 from os import path
+import database
+from collections import defaultdict
+import tiles
 
 # name max_row max_col
+
 configs = [
-    ("LIFCL-40", 56, 87, "../shared/empty_40.v"),
-    ("LIFCL-17", 29, 75, "../shared/empty_17.v"),
+    ("LIFCL-33", "../shared/empty_33.v"),
+    ("LIFCL-33U", "../shared/empty_33u.v"),            
+    ("LIFCL-40", "../shared/empty_40.v"),
+    ("LIFCL-17", "../shared/empty_17.v"),
 ]
 
 def main():
-    for name, max_row, max_col, sv in configs:
+    for name, sv in configs:
+        if not should_fuzz_platform(name):
+            continue
+
         cfg = FuzzConfig(job="GLOBAL_{}".format(name), device=name, sv=sv, tiles=[])
         cfg.setup()
         db_path = path.join(database.get_db_root(), "LIFCL", name, "globals.json")
@@ -26,11 +35,19 @@ def main():
             with open(db_path, "w") as dbf:
                 print(json.dumps(gdb, sort_keys=True, indent=4), file=dbf)
         gdb = load_db()
+
+        devices = database.get_devices()
+        device_info = devices["families"][name.split("-")[0]]["devices"][name]
+        max_row = device_info["max_row"]
+        max_col = device_info["max_col"]
+
+        tap_plcs = set([v['x'] for k, v in tg.items() if v["tiletype"].startswith("TAP_PLC")])
+
         # Determine branch driver locations
         test_row = 4
         clock_wires = ["R{}C{}_JCLK0".format(test_row, c) for c in range(1, max_col)]
         clock_info = lapie.get_node_data(cfg.udb, clock_wires)
-        branch_to_col = {}
+        branch_to_col = defaultdict(list)
         for n in clock_info:
             r, c = pos_from_name(n.name)
             hpbx_c = None
@@ -40,12 +57,11 @@ def main():
                     assert hpbx_r == r
                     break
             assert hpbx_c is not None
-            if hpbx_c not in branch_to_col:
-                branch_to_col[hpbx_c] = []
             branch_to_col[hpbx_c].append(c)
         branches = []
 
-        branch_wires = ["R{}C{}_HPBX0000".format(test_row, bc) for bc in sorted(branch_to_col.keys())]
+        # Trace back the nodes which connect the tap to the spine
+        branch_wires = [f"R{test_row}C{bc}_HPBX0000" for bc in sorted(branch_to_col.keys())]
         if name == "LIFCL-17":
             branch_wires.append("R{}C13_RHPBX0000".format(test_row))
         branch_wire_info = lapie.get_node_data(cfg.udb, branch_wires)
@@ -69,10 +85,13 @@ def main():
             for uh in bw.uphill_pips:
                 if "HPBX0" in uh.from_wire:
                     hpbx_r, hpbx_c = pos_from_name(uh.from_wire)
-                    branch_driver_col[c] = branch_driver_col[hpbx_c]            
+                    branch_driver_col[c] = branch_driver_col[hpbx_c]
         for bc, scs in sorted(branch_to_col.items()):
-            tap_drv_col = branch_driver_col[bc] + 1
-            side = "R" if tap_drv_col < bc else "L" 
+            tap_drv_distances = [(abs(x - branch_driver_col[bc]), x) for x in tap_plcs]
+            tap_drv_col = min(tap_drv_distances)[1]
+            side = "R" if branch_driver_col[bc] < bc else "L"
+            if tap_drv_col in tap_plcs:
+                print("Tap drv col", tap_drv_col, bc, sorted(scs))
             branches.append(dict(branch_col=bc, tap_driver_col=tap_drv_col, tap_side=side, from_col=min(scs), to_col=max(scs)))
         gdb["branches"] = branches
         save_db()

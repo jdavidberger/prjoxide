@@ -2,6 +2,8 @@ from fuzzconfig import FuzzConfig
 import nonrouting
 import fuzzloops
 import re
+import lapie
+import database
 
 def main():
     # 40k
@@ -51,5 +53,24 @@ def main():
     dcc_tiles = ["CIB_R10C0:LMID_RBB_5_15K", "CIB_R10C75:RMID_PICB_DLY10", "CIB_R0C37:TMID_0", "CIB_R0C38:TMID_1_15K", "CIB_R0C39:CLKBUF_T_15K"]
     fuzzloops.parallel_foreach(dcc_prims, per_site)
 
+    dev = "LIFCL-33"
+    sv = "../shared/empty_33.v"
+    cfg = FuzzConfig(job="udbcheck", device=dev, sv=sv, tiles=[])
+    cfg.setup()
+
+    # Tile names pulled from physical view
+    dcc_prims = ["DCC_B{}".format(i) for i in range(18)] + \
+                ["DCC_C{}".format(i) for i in range(4)] + \
+                ["DCC_T{}".format(i) for i in range(16)]
+
+    
+    dcc_tiles = [x for x in database.get_tilegrid("LIFCL-33")['tiles'] if "MID" in x ]
+    dcs_tiles = [x for x in database.get_tilegrid("LIFCL-33")['tiles'] if "CMUX" in x ]
+    
+    print(dcc_tiles, dcs_tiles)
+    fuzzloops.parallel_foreach(dcc_prims + dcs_prims, per_site)
+
+    
+    
 if __name__ == '__main__':
     main()

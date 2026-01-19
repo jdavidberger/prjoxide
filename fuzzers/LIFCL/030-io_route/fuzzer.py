@@ -1,8 +1,37 @@
 from fuzzconfig import FuzzConfig
 from interconnect import fuzz_interconnect
 import re
+import tiles
 
-configs = [
+tiles_33 = [
+    [(0, 30)],# "B0"),
+    [(0,  2)],# "B5"),
+    [(0, 38)],# "B1_DED"),
+    [(0, 40)],# "B1"),
+    [(83, 12), (83, 11)],# B3_0, B3_1
+    [(83, 14), (83, 15)],# B3_0_ECLK_L, B3_1
+    [(83, 18), (83, 19)], # B3_0, B3_1_V18_32
+    [(83, 32), (83, 33)], # B2_0, B2_1_V18_21
+    [(83, 34), (83, 35)], # B2_0, B2_1
+    [(83, 46), (83, 47)], # B2_0, B2_1_1_V18_22
+    [(83, 4), (83, 5)],# B4_0 B4_1_V18_41
+    [(83, 6), (83, 7)],# B4_0 B4_1_V18_42
+    [(83, 8), (83, 9)],# B3_0, B3_1_V18_31
+    [(0, 10)], # SYSIO_b5
+    ]
+
+def create_io_config(device, rcs):
+    ts = [ tile for rc in rcs for tile in tiles.get_tiles_by_rc(device, rc) ]
+    job_name = "IOROUTE_" + "_".join([f"R{rc[0]}C{rc[1]}" for rc in rcs])
+    return {
+        "cfg": FuzzConfig(job=job_name, device="LIFCL-33", sv="../shared/route_33.v",
+                          tiles=ts),
+        "rcs": rcs
+    }
+
+configs_33 = [create_io_config("LIFCL-33", x) for x in tiles_33]
+
+configs = configs_33 + [
     {
         "cfg": FuzzConfig(job="IOROUTE0_17K", device="LIFCL-17", sv="../shared/route_17.v", tiles=["CIB_R0C59:SYSIO_B0_0_15K"]),
         "rc": (0, 59),
@@ -73,7 +102,7 @@ configs = [
     },
 ]
 
-ignore_tiles = set([
+ignore_tiles_40k = set([
     "CIB_R55C8:CIB",
     "CIB_R55C9:CIB",
     "CIB_R55C16:CIB",
@@ -127,17 +156,37 @@ def main():
     for config in configs:
         cfg = config["cfg"]
         cfg.setup()
-        r, c = config["rc"]
-        nodes = ["R{}C{}_*".format(r, c)]
+
+        rcs = set([])
+        if "rc" in config:
+            rcs = set([ config["rc"] ])
+        else:
+            rcs = set(config["rcs"])
+            
+        nodes = [f"R{r}C{c}_.*" for (r,c) in rcs]
         def nodename_filter(x, nodes):
-            return ("R{}C{}_".format(r, c) in x) and ("_GEARING_PIC_TOP_" in x or "SEIO18_CORE" in x or "DIFFIO18_CORE" in x or "I217" in x or "I218" in x or "SEIO33_CORE" in x or "SIOLOGIC_CORE" in x)
+            node_in_tiles = tiles.get_rc_from_name(cfg.device, x) in rcs
+            return ("_GEARING_PIC_TOP_" in x or "SEIO18_CORE" in x or "DIFFIO18_CORE" in x or "I217" in x or "I218" in x or "SEIO33_CORE" in x or "SIOLOGIC_CORE" in x)
         def pip_filter(pip, nodes):
             from_wire, to_wire = pip
             return not ("ADC_CORE" in to_wire or "ECLKBANK_CORE" in to_wire or "MID_CORE" in to_wire
                 or "REFMUX_CORE" in to_wire or "CONFIG_JTAG_CORE" in to_wire or "CONFIG_JTAG_CORE" in from_wire
                 or "REFCLOCK_MUX_CORE" in to_wire)
+
+        ignore_tiles = [tile
+                        for (r,c) in rcs
+                        for ro in [r+1,r-1,r]
+                        for co in [c+1,c-1,c]
+                        for tile in tiles.get_tiles_by_rc(cfg.device, (ro,co))
+                        ]
+        if cfg.device == "LIFCL-17":
+            ignore_tiles = ignore_tiles_17k
+        elif cfg.device == "LIFCL-40":
+            ignore_tiles = ignore_tiles_40k
+
+        print("Ignore tiles: ", ignore_tiles)
         fuzz_interconnect(config=cfg, nodenames=nodes, nodename_predicate=nodename_filter, pip_predicate=pip_filter, regex=True, bidir=True,
-            ignore_tiles=ignore_tiles_17k if cfg.device == "LIFCL-17" else ignore_tiles)
+            ignore_tiles=ignore_tiles)
 
 if __name__ == "__main__":
     main()

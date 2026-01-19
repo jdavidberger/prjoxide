@@ -1,11 +1,13 @@
 """
 Utilities for fuzzing non-routing configuration. This is the counterpart to interconnect.py
 """
-
 import threading
 import tiles
 import libpyprjoxide
+
 import fuzzconfig
+import fuzzloops
+import os
 
 def fuzz_word_setting(config, name, length, get_sv_substs, desc=""):
     """
@@ -16,15 +18,20 @@ def fuzz_word_setting(config, name, length, get_sv_substs, desc=""):
     :param length: number of bits in the setting
     :param get_sv_substs: a callback function, that is called with an array of bits to create a design with that setting
     """
+    if not fuzzconfig.should_fuzz_platform(config.device):
+        return
+    
     prefix = "thread{}_".format(threading.get_ident())
     baseline = config.build_design(config.sv, get_sv_substs([False for _ in range(length)]), prefix)
     fz = libpyprjoxide.Fuzzer.word_fuzzer(fuzzconfig.db, baseline, set(config.tiles), name, desc, length, baseline)
     for i in range(length):
         i_bit = config.build_design(config.sv, get_sv_substs([(_ == i) for _ in range(length)]), prefix)
         fz.add_word_sample(fuzzconfig.db, i, i_bit)
-    fz.solve(fuzzconfig.db)
 
-def fuzz_enum_setting(config, empty_bitfile, name, values, get_sv_substs, include_zeros=True, assume_zero_base=False, min_cover={}, desc=""):
+    config.solve(fz)
+
+def fuzz_enum_setting(config, empty_bitfile, name, values, get_sv_substs, include_zeros=True,
+                      assume_zero_base=False, min_cover={}, desc="", mark_relative_to=None):
     """
     Fuzz a setting with multiple possible values
 
@@ -39,17 +46,35 @@ def fuzz_enum_setting(config, empty_bitfile, name, values, get_sv_substs, includ
     :param min_cover: for each setting in this, run with each value in the array that setting points to, to get a minimal
     bit set
     """
-    prefix = "thread{}_".format(threading.get_ident())
-    fz = libpyprjoxide.Fuzzer.enum_fuzzer(fuzzconfig.db, empty_bitfile, set(config.tiles), name, desc, include_zeros, assume_zero_base)
+    if not fuzzconfig.should_fuzz_platform(config.device):
+        return
+
+    if config.check_deltas(name):
+        return
+
+    prefix = "thread{}_{}_{}_{}_".format(threading.get_ident(), config.job, config.device, name)
+    try:
+        fz = libpyprjoxide.Fuzzer.enum_fuzzer(fuzzconfig.db, empty_bitfile, set(config.tiles), name, desc, include_zeros, assume_zero_base, mark_relative_to = mark_relative_to)
+    except:
+        print(f"ERROR: from {empty_bitfile}")
+        raise
+
     for opt in values:
+        opt_name = opt
+        if opt == "#SIG" and name.endswith("MUX"):
+            opt_name = name[:-3].split(".")[1]
+        if opt == "#INV":
+            opt_name = "INV"
+            
         if opt in min_cover:
             for c in min_cover[opt]:
                 opt_bit = config.build_design(config.sv, get_sv_substs((opt, c)), prefix)
-                fz.add_enum_sample(fuzzconfig.db, opt, opt_bit)
+                fz.add_enum_sample(fuzzconfig.db, opt_name, opt_bit)
         else:
             opt_bit = config.build_design(config.sv, get_sv_substs(opt), "{}{}_".format(prefix, opt))
-            fz.add_enum_sample(fuzzconfig.db, opt, opt_bit)
-    fz.solve(fuzzconfig.db)
+            fz.add_enum_sample(fuzzconfig.db, opt_name, opt_bit)
+
+    config.solve(fz)
 
 def fuzz_ip_word_setting(config, name, length, get_sv_substs, desc="", default=None):
     """
@@ -60,6 +85,9 @@ def fuzz_ip_word_setting(config, name, length, get_sv_substs, desc="", default=N
     :param length: number of bits in the setting
     :param get_sv_substs: a callback function, that is called with an array of bits to create a design with that setting
     """
+    if not fuzzconfig.should_fuzz_platform(config.device):
+        return
+
     prefix = "thread{}_".format(threading.get_ident())
 
     inverted_mode = False
@@ -77,8 +105,8 @@ def fuzz_ip_word_setting(config, name, length, get_sv_substs, desc="", default=N
         bits = [(j >> i) & 0x1 == (1 if inverted_mode else 0) for j in range(length)]
         i_bit = config.build_design(config.sv, get_sv_substs(bits), prefix)
         fz.add_word_sample(fuzzconfig.db, bits, i_bit)
-    fz.solve(fuzzconfig.db)
 
+    config.solve(fz)
 
 def fuzz_ip_enum_setting(config, empty_bitfile, name, values, get_sv_substs, desc=""):
     """
@@ -90,10 +118,16 @@ def fuzz_ip_enum_setting(config, empty_bitfile, name, values, get_sv_substs, des
     :param values: list of values taken by the enum
     :param get_sv_substs: a callback function, 
     """
+    if not fuzzconfig.should_fuzz_platform(config.device):
+        return
+    
     prefix = "thread{}_".format(threading.get_ident())
     ipcore, iptype = config.tiles[0].split(":")
     fz = libpyprjoxide.IPFuzzer.enum_fuzzer(fuzzconfig.db, empty_bitfile, ipcore, iptype, name, desc)
     for opt in values:
         opt_bit = config.build_design(config.sv, get_sv_substs(opt), prefix)
         fz.add_enum_sample(fuzzconfig.db, opt, opt_bit)
-    fz.solve(fuzzconfig.db)
+
+    config.solve(fz)
+
+    

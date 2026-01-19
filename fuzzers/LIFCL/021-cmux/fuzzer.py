@@ -1,10 +1,27 @@
 from fuzzconfig import FuzzConfig
 from interconnect import fuzz_interconnect
 import re
+import tiles
+import database
 
-cfg = FuzzConfig(job="CMUXROUTE", device="LIFCL-40", sv="../shared/route_40.v", tiles=["CIB_R29C49:CMUX_0", "CIB_R29C50:CMUX_1", "CIB_R38C49:CMUX_2", "CIB_R38C50:CMUX_3"])
+def fuzz_33():
+    device = "LIFCL-33"
+    tilegrid = database.get_tilegrid(device)['tiles']
+    ts = [t for t,tinfo in tilegrid.items() if tinfo["tiletype"].startswith("CMUX")]
+    cfg = FuzzConfig(job="CMUXROUTE-33", device=device, sv="../shared/route_33.v", tiles=ts)
 
-def main():
+    cfg.setup()
+
+    (r,c) = (37, 25)
+    tile_prefix = f"R{r}C{c}"
+    
+    nodes = [f"{tile_prefix}_J.*CMUX.*", f"{tile_prefix}_J.*DCSIP", f"{tile_prefix}_J.*PCLKDIV.*"]
+
+    fuzz_interconnect(config=cfg, nodenames=nodes, regex=True, bidir=False, full_mux_style=False)
+
+def fuzz_40():    
+    cfg = FuzzConfig(job="CMUXROUTE", device="LIFCL-40", sv="../shared/route_40.v", tiles=["CIB_R29C49:CMUX_0", "CIB_R29C50:CMUX_1", "CIB_R38C49:CMUX_2", "CIB_R38C50:CMUX_3"])
+
     cfg.setup()
     nodes = ["R28C49_JHPRX{}_CMUX_CORE_CMUX1".format(i) for i in range(16)] + \
             ["R28C49_JHPRX{}_CMUX_CORE_CMUX0".format(i) for i in range(16)] + \
@@ -42,5 +59,13 @@ def main():
     misc_nodes.append("R28C49_JGSR_N_GSR_CORE_GSR_CENTER")
     misc_nodes.append("R28C49_JCLK_GSR_CORE_GSR_CENTER")
     fuzz_interconnect(config=cfg, nodenames=misc_nodes, regex=False, bidir=False, full_mux_style=False)
+
+
+def main():
+    fuzz_33()
+    fuzz_40()
+    
+    
 if __name__ == "__main__":
     main()
+

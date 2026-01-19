@@ -12,7 +12,7 @@ ld_lib_path_orig=$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH="${bindir}:${fpgabindir}"
 export LM_LICENSE_FILE="${radiantdir}/license/license.dat"
 
-set -ex
+#set -ex
 
 V_SUB=${2%.v}
 PART=$1
@@ -37,6 +37,7 @@ case "${PART}" in
 		PACKAGE="${DEV_PACKAGE:-FCCSP104}"
 		DEVICE="LIFCL-33U"
 		LSE_ARCH="lifcl"
+		EXTRA_BIT_ARGS="-ipeval"		
 		SPEED_GRADE="${SPEED_GRADE:-7_High-Performance_1.0V}"
 		;;	
 	LIFCL-40)
@@ -116,7 +117,8 @@ fi
 if [ -n "$GEN_RBF" ]; then
 cp "$2.tmp"/par.rbt "$2.rbt"
 else
-cp "$2.tmp"/par.bit "$2.bit"
+cp -P "$2.tmp"/par.bit "$2.bit" 2> /dev/null || :
+cp -P "$2.tmp"/par.bit.gz "$2.bit.gz" 2> /dev/null || :
 fi
 
 if [ -n "$DO_UNPACK" ]; then

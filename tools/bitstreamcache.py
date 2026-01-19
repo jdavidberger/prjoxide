@@ -22,6 +22,8 @@ gzip and gunzip must be on your path for it to work
 """
 
 import sys, os, shutil, hashlib, gzip
+from logging import exception
+from pathlib import Path
 
 root_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
 cache_dir = os.path.join(root_dir, ".bitstreamcache")
@@ -57,15 +59,24 @@ if cmd == "fetch":
     h = get_hash(sys.argv[2], sys.argv[4:])
     print(h)
     cache_entry = os.path.join(cache_dir, h)
-    if not os.path.exists(cache_entry) or len(os.listdir(cache_entry)) == 0:
+    if not os.path.exists(cache_entry) or len(os.listdir(cache_entry)) < 2:
         sys.exit(1)
+
+    # Touch the directory and it's contents
+    Path(cache_entry).touch()
     for outprod in os.listdir(cache_entry):
         bn = outprod
         assert bn.endswith(".gz")
         bn = bn[:-3]
-        with gzip.open(os.path.join(cache_entry, outprod), 'rb') as gzf:
-            with open(os.path.join(sys.argv[3], bn), 'wb') as outf:
-                outf.write(gzf.read())
+        gz_path = os.path.join(cache_entry, outprod)
+        Path(gz_path).touch()
+
+        if gz_path.endswith(".bit.gz"):
+            os.symlink(gz_path, os.path.join(sys.argv[3], outprod))
+        else:
+            with gzip.open(gz_path, 'rb') as gzf:
+                with open(os.path.join(sys.argv[3], bn), 'wb') as outf:
+                    outf.write(gzf.read())
     sys.exit(0)
 if cmd == "commit":
     if not os.path.exists(cache_dir):
@@ -81,6 +92,13 @@ if cmd == "commit":
     for outprod in sys.argv[idx+1:]:
         bn = os.path.basename(outprod)
         cn = os.path.join(cache_entry, bn + ".gz")
+
+        if not os.path.exists(outprod):
+            raise Exception(f"Output product does not exist")
+
+        if os.path.getsize(outprod) == 0:
+            raise Exception(f"Output product has zero length; refusing to gzip {outprod}")
+
         with gzip.open(cn, 'wb') as gzf:
             with open(outprod, 'rb') as inf:
                 gzf.write(inf.read())

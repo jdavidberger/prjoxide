@@ -1,17 +1,25 @@
 from fuzzconfig import FuzzConfig
 from interconnect import fuzz_interconnect
 import re
+import database
+import tiles
 
 spine_cfgs = {
     ("CIB_R29C13:SPINE_L1", "R28C13"),
     ("CIB_R29C37:SPINE_L0", "R28C37"),
     ("CIB_R29C62:SPINE_R0", "R28C61"),
     ("CIB_R29C74:SPINE_R1", "R28C73"),
+    
+    ("CIB_R38C13:SPINE_L0_33K", "R41C13"),
+    ("CIB_R38C38:SPINE_R0_33K", "R41C37"),    
 }
 
 hrow_cfgs = {
     ("CIB_R29C37:SPINE_L0", "R28C31"),
     ("CIB_R29C62:SPINE_R0", "R28C61"),
+
+    ("CIB_R38C13:SPINE_L0_33K", "R37C19"),
+    ("CIB_R38C38:SPINE_R0_33K", "R37C31"),      
 }
 
 trunk_cfgs = {
@@ -21,17 +29,20 @@ trunk_cfgs = {
 
 def main():
     for tile, rc in spine_cfgs:
-        cfg = FuzzConfig(job="TAPROUTE", device="LIFCL-40", sv="../shared/route_40.v", tiles=[tile])
+        suffix = "33" if "33K" in tile else "40"
+        cfg = FuzzConfig(job=f"TAPROUTE-{tile}", device=f"LIFCL-{suffix}", sv=f"../shared/route_{suffix}.v", tiles=[tile])
         cfg.setup()
         nodes = ["{}_VPSX{:02}00".format(rc, i) for i in range(16)]
         fuzz_interconnect(config=cfg, nodenames=nodes, regex=False, bidir=False, full_mux_style=False)
     for tile, rc in hrow_cfgs:
-        cfg = FuzzConfig(job="ROWROUTE", device="LIFCL-40", sv="../shared/route_40.v", tiles=[tile])
+        suffix = "33" if "33K" in tile else "40"        
+        cfg = FuzzConfig(job=f"ROWROUTE-{tile}", device=f"LIFCL-{suffix}", sv=f"../shared/route_{suffix}.v", tiles=[tile])
         cfg.setup()
         nodes = ["{}_HPRX{:02}00".format(rc, i) for i in range(16)]
         fuzz_interconnect(config=cfg, nodenames=nodes, regex=False, bidir=False, full_mux_style=False)
     for tile, rcs in trunk_cfgs:
-        cfg = FuzzConfig(job="TRUNKROUTE", device="LIFCL-40", sv="../shared/route_40.v", tiles=[tile])
+        suffix = "33" if "33K" in tile else "40"                
+        cfg = FuzzConfig(job="TRUNKROUTE", device=f"LIFCL-{suffix}", sv=f"../shared/route_{suffix}.v", tiles=[tile])
         cfg.setup()
         nodes = ["{}HPRX{}".format(rcs, i) for i in range(16)]
         fuzz_interconnect(config=cfg, nodenames=nodes, regex=False, bidir=False, full_mux_style=False)

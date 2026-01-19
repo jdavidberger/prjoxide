@@ -8,6 +8,7 @@ import fuzzconfig
 cfgs = [
 	FuzzConfig(job="EMPTY", device="LIFCL-40", sv="../shared/empty_40.v", tiles=[]),
 	FuzzConfig(job="EMPTY", device="LIFCL-17", sv="../shared/empty_17.v", tiles=[]),
+	FuzzConfig(job="EMPTY", device="LIFCL-33", sv="../shared/empty_33.v", tiles=[]),
 ]
 
 def main():
