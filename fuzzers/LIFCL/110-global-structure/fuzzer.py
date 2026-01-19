@@ -41,6 +41,7 @@ def main():
         max_row = device_info["max_row"]
         max_col = device_info["max_col"]
 
+        tg = database.get_tilegrid(cfg.device)["tiles"]
         tap_plcs = set([v['x'] for k, v in tg.items() if v["tiletype"].startswith("TAP_PLC")])
 
         # Determine branch driver locations
