@@ -1,10 +1,70 @@
-from fuzzconfig import FuzzConfig
+import logging
+import signal
+import traceback
+
+from fuzzconfig import FuzzConfig, should_fuzz_platform
 import nonrouting
 import fuzzloops
 import re
+import database
+import tiles
+import lapie
+import sys
+import asyncio
 
-configs = [
-    ("B", "E11", # PR3A,
+from tqdm.asyncio import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
+
+pio_names = ["A", "B"]
+
+
+def handle_ctrl_c(loop):
+    print("\nReceived Ctrl+C. Printing task stacks and shutting down gracefully...")
+
+    # Get all running tasks
+    try:
+        # In Python 3.7+, use asyncio.all_tasks(loop)
+        # For compatibility with older versions (pre-3.7), you might need asyncio.Task.all_tasks()
+        all_tasks = asyncio.all_tasks(loop)
+    except AttributeError:
+        # Fallback for older Python versions if needed, though asyncio.run is 3.7+
+        all_tasks = asyncio.Task.all_tasks()
+
+        # Print stack for each task
+    for task in all_tasks:
+        if not task.done():
+            print(f"Task: {task.get_name()}")
+            # print_stack directly prints to stderr, but get_stack returns the frame objects
+            #traceback.print_stack(task.get_stack()) # Can use if you need more control
+            task.print_stack(file=sys.stderr, limit=100)  # Prints to standard error
+            print("-" * 20)
+
+    # Cancel all tasks to allow the program to exit cleanly
+    for task in all_tasks:
+        task.cancel()
+
+
+def create_config_from_pad(pad, device):
+    pin = pad["pins"][0]
+    pio = pad["pio"]
+    ts = [t for t in tiles.get_tiles_from_edge(device, pad["side"], pad["offset"]) if "SYSIO" in t]
+    all_sysio = [t for t in tiles.get_tiles_from_edge(device, pad["side"]) if "SYSIO" in t]
+    tiletype = ts[0].split(":")[1]
+    print(ts, tiletype, pad)
+    return (
+        f"{tiletype}-{pio}",
+        (pio_names[pad["pio"]], pin,
+         FuzzConfig(job=f"IO{pin}_{device}_{tiletype}", device=device, sv="../shared/empty_33.v",
+                    tiles=ts + all_sysio))
+    )
+
+pads33 = [x for x in database.get_iodb("LIFCL-33")["pads"]]
+configs_33 = dict([
+    create_config_from_pad(x, "LIFCL-33") for x in pads33 if x["offset"] >= 0
+])
+
+configs = list(configs_33.values()) + [
+    ("B", "E11", # PR3B,
         FuzzConfig(job="IO1D_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R3C75:SYSIO_B1_DED_15K"])),
     ("A","F16", # PR13A
         FuzzConfig(job="IO1A_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R13C75:SYSIO_B1_0_15K", "CIB_R14C75:SYSIO_B1_1_15K"])),
@@ -80,11 +140,23 @@ def main():
         pio, site, cfg = config
         cfg.setup()
         empty = cfg.build_design(cfg.sv, {})
-        if cfg.device == "LIFCL-17":
-            cfg.sv = "iob_17.v"
-        else:
-            cfg.sv = "iob_40.v"
+        cfg.sv = "iob.v"
+
+        # if cfg.device == "LIFCL-17":
+        #     cfg.sv = "iob_17.v"
+        # elif cfg.device == "LIFCL-40":
+        #     cfg.sv = "iob_40.v"
+
+        (r,c) = tiles.get_rc_from_name(cfg.device, cfg.tiles[0])
+
+        if f"R{r}C{c}_JPADDO_SEIO33_CORE_IO{pio}" not in tiles.get_full_node_set(cfg.device):
+            print(f"Skipping {site} {cfg.tiles}; no SEIO33 tile")
+            return
+
         primtype = "SEIO33_CORE"
+
+        suffix = ""
+
         def get_bank_vccio(iotype):
             if iotype == "":
                 return "3.3"
@@ -116,73 +188,112 @@ def main():
                 pintype=pintype, primtype=primtype, site=site, iotype=iostd, t=t, extra_config=extra_config, vcc=vcc)
         seio_types = [
             "NONE",
-            "INPUT_LVCMOS10",
-            "INPUT_LVCMOS12", "OUTPUT_LVCMOS12", "BIDIR_LVCMOS12",
-            "INPUT_LVCMOS15", "OUTPUT_LVCMOS15", "BIDIR_LVCMOS15",
-            "INPUT_LVCMOS18", "OUTPUT_LVCMOS18", "BIDIR_LVCMOS18",
-            "INPUT_LVCMOS25", "OUTPUT_LVCMOS25", "BIDIR_LVCMOS25",
-            "INPUT_LVCMOS33", "OUTPUT_LVCMOS33", "BIDIR_LVCMOS33",
-            "OUTPUT_LVCMOS25D", "OUTPUT_LVCMOS33D"
         ]
 
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.BASE_TYPE".format(pio), seio_types,
-                        lambda x: get_substs(iotype=x), False, assume_zero_base=True)
+        pullmodes = ["NONE", "UP", "DOWN", "KEEPER"]
 
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.DRIVE_3V3".format(pio), ["2", "4", "8", "12", "50RS"],
-                        lambda x: get_substs(iotype="OUTPUT_LVCMOS33", kv=("DRIVE", x)), True)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.DRIVE_2V5".format(pio), ["2", "4", "8", "10", "50RS"],
-                        lambda x: get_substs(iotype="OUTPUT_LVCMOS25", kv=("DRIVE", x)), True)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.DRIVE_1V8".format(pio), ["2", "4", "8", "50RS"],
-                        lambda x: get_substs(iotype="OUTPUT_LVCMOS18", kv=("DRIVE", x)), True)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.DRIVE_1V5".format(pio), ["2", "4", "8", "12"],
-                        lambda x: get_substs(iotype="OUTPUT_LVCMOS15", kv=("DRIVE", x)), True)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.DRIVE_1V2".format(pio), ["2", "4", "8", "12"],
-                        lambda x: get_substs(iotype="OUTPUT_LVCMOS12", kv=("DRIVE", x)), True)
+        pullmodes += [ "I3C" ]
 
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.PULLMODE".format(pio), ["NONE", "UP", "DOWN", "KEEPER", "I3C"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS33", kv=("PULLMODE", x)), True)
+        seio_types += [
+            "INPUT_LVCMOS12","OUTPUT_LVCMOS12","BIDIR_LVCMOS12",
+            "INPUT_LVCMOS15", "OUTPUT_LVCMOS15", "BIDIR_LVCMOS15",
+            "INPUT_LVCMOS25", "OUTPUT_LVCMOS25", "BIDIR_LVCMOS25",
+            "OUTPUT_LVCMOS25D",
 
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.HYSTERESIS_3V3".format(pio), ["ON", "OFF"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS33", kv=("HYSTERESIS", x)), True)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.HYSTERESIS_2V5".format(pio), ["ON", "OFF"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS25", kv=("HYSTERESIS", x)), True)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.HYSTERESIS_1V8".format(pio), ["ON", "OFF"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS18", kv=("HYSTERESIS", x)), True)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.HYSTERESIS_1V5".format(pio), ["ON", "OFF"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS15", kv=("HYSTERESIS", x)), True)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.HYSTERESIS_1V2".format(pio), ["ON", "OFF"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS12", kv=("HYSTERESIS", x)), True)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.UNDERDRIVE_3V3".format(pio), ["ON", "OFF"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS33" if x=="OFF" else "INPUT_LVCMOS25", vcc="3.3"), True)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.UNDERDRIVE_1V8".format(pio), ["ON", "OFF"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS18" if x=="OFF" else "INPUT_LVCMOS15", vcc="1.8"), True)
+            "INPUT_LVCMOS33", "OUTPUT_LVCMOS33", "BIDIR_LVCMOS33",
+            "INPUT_LVCMOS18", "OUTPUT_LVCMOS18", "BIDIR_LVCMOS18",
+            "OUTPUT_LVCMOS33D"
+        ]
 
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.CLAMP".format(pio), ["OFF", "ON"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS33", kv=("CLAMP", x)), True)
+        coroutines = []
+        def fuzz_enum_setting(*args, **kwargs):
+            nonrouting.fuzz_enum_setting(cfg, empty, *args, **kwargs)
 
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.DFTDO2DI".format(pio), ["DISABLED", "ENABLED"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS33", kv=("DFTDO2DI", x)), False)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.GLITCHFILTER".format(pio), ["OFF", "ON"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS33", kv=("GLITCHFILTER", x)), False)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.LOOPBKCD2AB".format(pio), ["DISABLED", "ENABLED"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS33", kv=("LOOPBKCD2AB", x)), False)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.OPENDRAIN".format(pio), ["OFF", "ON"],
-                        lambda x: get_substs(iotype="OUTPUT_LVCMOS33", kv=("OPENDRAIN", x)), False)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.SLEEPHIGHLEAKAGE".format(pio), ["DISABLED", "ENABLED"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS33", kv=("SLEEPHIGHLEAKAGE", x)), False)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.SLEWRATE".format(pio), ["FAST", "MED", "SLOW"],
-                        lambda x: get_substs(iotype="OUTPUT_LVCMOS33", kv=("SLEWRATE", x)), False)
+        fuzz_enum_setting(f"PIO{pio}.BASE_TYPE", seio_types,
+                                     lambda x: get_substs(iotype=x), False, assume_zero_base=True, mark_relative_to = cfg.tiles[0])
 
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.TERMINATION_1V8".format(pio), ["OFF", "40", "50", "60", "75", "150"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS18", kv=("TERMINATION", x)), False)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.TERMINATION_1V5".format(pio), ["OFF", "40", "50", "60", "75"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS15", kv=("TERMINATION", x)), False)
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.TERMINATION_1V2".format(pio), ["OFF", "40", "50", "60", "75"],
-                        lambda x: get_substs(iotype="INPUT_LVCMOS12", kv=("TERMINATION", x)), False)
+        input_mode = "INPUT_LVCMOS33"
+        def iotype(v, out = False):
+            return ("OUTPUT_" if out else "INPUT_") + "LVCMOS" + str(v).replace(".", "") + suffix
 
-        nonrouting.fuzz_enum_setting(cfg, empty, "PIO{}.TMUX".format(pio), ["T", "INV"],
-                        lambda x: get_substs(iotype="BIDIR_LVCMOS33", tmux=x), False)
+        if primtype == "SEIO33_CORE":
+            fuzz_enum_setting(f"PIO{pio}.DRIVE_3V3", ["2", "4", "8", "12", "50RS"],
+                                         lambda x: get_substs(iotype="OUTPUT_LVCMOS33", kv=("DRIVE", x)), True)
 
-    fuzzloops.parallel_foreach(configs, per_config)
+            fuzz_enum_setting("PIO{}.GLITCHFILTER".format(pio), ["OFF", "ON"],
+                                         lambda x: get_substs(iotype=input_mode, kv=("GLITCHFILTER", x)), False)
+            fuzz_enum_setting("PIO{}.DRIVE_2V5".format(pio), ["2", "4", "8", "10", "50RS"],
+                                         lambda x: get_substs(iotype=iotype(2.5, True), kv=("DRIVE", x)), True)
+
+            fuzz_enum_setting("PIO{}.HYSTERESIS_3V3".format(pio), ["ON", "OFF"],
+                                         lambda x: get_substs(iotype=iotype(3.3), kv=("HYSTERESIS", x)), True)
+
+            fuzz_enum_setting("PIO{}.HYSTERESIS_2V5".format(pio), ["ON", "OFF"],
+                                         lambda x: get_substs(iotype=iotype(2.5), kv=("HYSTERESIS", x)), True)
+
+            fuzz_enum_setting("PIO{}.UNDERDRIVE_3V3".format(pio), ["ON", "OFF"],
+                                         lambda x: get_substs(iotype=iotype(3.3) if x=="OFF" else iotype(2.5), vcc="3.3"), True)
+
+        fuzz_enum_setting("PIO{}.DRIVE_1V8".format(pio), ["2", "4", "8", "50RS"],
+                        lambda x: get_substs(iotype=iotype(1.8, True), kv=("DRIVE", x)), True)
+        fuzz_enum_setting("PIO{}.DRIVE_1V5".format(pio), ["2", "4", "8", "12"],
+                        lambda x: get_substs(iotype=iotype(1.5, True), kv=("DRIVE", x)), True)
+        fuzz_enum_setting("PIO{}.DRIVE_1V2".format(pio), ["2", "4", "8", "12"],
+                        lambda x: get_substs(iotype=iotype(1.2, True), kv=("DRIVE", x)), True)
+
+        fuzz_enum_setting("PIO{}.PULLMODE".format(pio), pullmodes,
+                        lambda x: get_substs(iotype=input_mode, kv=("PULLMODE", x)), True)
+
+        fuzz_enum_setting("PIO{}.HYSTERESIS_1V8".format(pio), ["ON", "OFF"],
+                        lambda x: get_substs(iotype=iotype(1.8), kv=("HYSTERESIS", x)), True)
+        fuzz_enum_setting("PIO{}.HYSTERESIS_1V5".format(pio), ["ON", "OFF"],
+                        lambda x: get_substs(iotype=iotype(1.5), kv=("HYSTERESIS", x)), True)
+        fuzz_enum_setting("PIO{}.HYSTERESIS_1V2".format(pio), ["ON", "OFF"],
+                        lambda x: get_substs(iotype=iotype(1.2), kv=("HYSTERESIS", x)), True)
+        fuzz_enum_setting("PIO{}.UNDERDRIVE_1V8".format(pio), ["ON", "OFF"],
+                        lambda x: get_substs(iotype=iotype(1.8) if x=="OFF" else iotype(1.5), vcc="1.8"), True)
+
+        fuzz_enum_setting("PIO{}.CLAMP".format(pio), ["OFF", "ON"],
+                        lambda x: get_substs(iotype=input_mode, kv=("CLAMP", x)), True)
+
+        fuzz_enum_setting("PIO{}.DFTDO2DI".format(pio), ["DISABLED", "ENABLED"],
+                        lambda x: get_substs(iotype=iotype(1.8), kv=("DFTDO2DI", x)), False)
+        fuzz_enum_setting("PIO{}.LOOPBKCD2AB".format(pio), ["DISABLED", "ENABLED"],
+                        lambda x: get_substs(iotype=iotype(1.8), kv=("LOOPBKCD2AB", x)), False)
+        fuzz_enum_setting("PIO{}.OPENDRAIN".format(pio), ["OFF", "ON"],
+                        lambda x: get_substs(iotype=iotype(1.8, True), kv=("OPENDRAIN", x)), False)
+        fuzz_enum_setting("PIO{}.SLEEPHIGHLEAKAGE".format(pio), ["DISABLED", "ENABLED"],
+                        lambda x: get_substs(iotype=iotype(1.8), kv=("SLEEPHIGHLEAKAGE", x)), False)
+        fuzz_enum_setting("PIO{}.SLEWRATE".format(pio), ["FAST", "MED", "SLOW"],
+                        lambda x: get_substs(iotype=iotype(1.8, True), kv=("SLEWRATE", x)), False)
+
+        fuzz_enum_setting("PIO{}.TERMINATION_1V8".format(pio), ["OFF", "40", "50", "60", "75", "150"],
+                        lambda x: get_substs(iotype=iotype(1.8), kv=("TERMINATION", x)), False)
+        fuzz_enum_setting("PIO{}.TERMINATION_1V5".format(pio), ["OFF", "40", "50", "60", "75"],
+                        lambda x: get_substs(iotype=iotype(1.5), kv=("TERMINATION", x)), False)
+        fuzz_enum_setting("PIO{}.TERMINATION_1V2".format(pio), ["OFF", "40", "50", "60", "75"],
+                        lambda x: get_substs(iotype=iotype(1.2), kv=("TERMINATION", x)), False)
+
+        fuzz_enum_setting("PIO{}.TMUX".format(pio), ["T", "INV"],
+                        lambda x: get_substs(iotype=f"BIDIR_LVCMOS18{suffix}", tmux=x), False)
+
+        return coroutines
+
+    def cfg_filter(config):
+        pio, site, cfg = config
+        if not should_fuzz_platform(cfg.device):
+            return False
+
+        if len(sys.argv) > 1 and sys.argv[1] not in  cfg.tiles[0]:
+            return False
+
+        if len(sys.argv) > 2 and sys.argv[2] != pio:
+            return False
+
+        return True
+
+    fuzzloops.parallel_foreach(filter(cfg_filter, configs), per_config)
+
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     main()
