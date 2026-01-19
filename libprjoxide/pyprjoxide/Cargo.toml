@@ -10,6 +10,9 @@ prjoxide = { path = "../prjoxide" }
 version = "0.13.1"
 features = ["extension-module"]
 
+[dependencies.pythonize]
+version = "0.13"
+
 [lib]
 name = "pyprjoxide"
 crate-type = ["cdylib"]

@@ -1,11 +1,26 @@
+use itertools::Itertools;
 use ron::ser::PrettyConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fmt;
+use std::{env, fmt};
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
+use log::info;
 // Deserialization of 'devices.json'
+
+macro_rules! emit_bit_change_error {
+    // Expands to either `$crate::panic::panic_2015` or `$crate::panic::panic_2021`
+    // depending on the edition of the caller.
+    ($($arg:tt)*) => {
+        /* compiler built-in */
+        if env::var("PRJOXIDE_ALLOW_BIT_CHANGE").is_ok() {
+            println!($($arg)*);
+        } else {
+            panic!($($arg)*);
+        }
+    };
+}
 
 #[derive(Deserialize)]
 pub struct DevicesDatabase {
@@ -35,6 +50,7 @@ pub struct DeviceData {
     pub col_bias: u32,
     pub fuzz: bool,
     pub variants: BTreeMap<String, DeviceVariantData>,
+    pub tap_frame_count: usize
 }
 
 // Deserialization of 'tilegrid.json'
@@ -44,7 +60,7 @@ pub struct DeviceTilegrid {
     pub tiles: BTreeMap<String, TileData>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct TileData {
     pub tiletype: String,
     pub x: u32,
@@ -117,21 +133,21 @@ impl DeviceGlobalsData {
             && self.spines.iter().any(|s| s.spine_row == y)
     }
     pub fn spine_sink_to_origin(&self, x: usize, y: usize) -> Option<(usize, usize)> {
-        match self
-            .hrows
-            .iter()
-            .map(|h| h.spine_cols.iter())
-            .flatten()
-            .find(|c| ((x as i32) - (**c as i32)).abs() < 3)
-        {
-            None => None,
-            Some(spine_col) => self
-                .spines
-                .iter()
-                .find(|s| y >= s.from_row && y <= s.to_row)
-                .map(|s| (*spine_col, s.spine_row)),
-        }
+        let spine_column = self.hrows.iter()
+            .flat_map(|x|x.spine_cols.clone())
+            .map(|c| (x.abs_diff(c), c))
+            .sorted()
+            .map(|x| x.1)
+            .next();
+
+        let spine_data =
+            self.spines.iter()
+                .find(|s| y >= s.from_row && y <= s.to_row);
+
+        spine_data.zip(spine_column)
+            .map(|(spine, spine_col)| (spine_col, spine.spine_row))
     }
+
     pub fn is_hrow_loc(&self, x: usize, y: usize) -> bool {
         self.hrows.iter().any(|h| h.hrow_col == x) && self.spines.iter().any(|s| s.spine_row == y)
     }
@@ -284,6 +300,9 @@ pub struct TileBitsDatabase {
     #[serde(default)]
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub always_on: BTreeSet<ConfigBit>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bel_relative_location : Option<(i32, i32)>
 }
 
 impl TileBitsDatabase {
@@ -324,23 +343,29 @@ impl TileBitsData {
             dirty: false,
         }
     }
+
+
     pub fn add_pip(&mut self, from: &str, to: &str, bits: BTreeSet<ConfigBit>) {
         if !self.db.pips.contains_key(to) {
+            info!("Inserting new pip destination {to}");
             self.db.pips.insert(to.to_string(), Vec::new());
         }
         let ac = self.db.pips.get_mut(to).unwrap();
         for ad in ac.iter() {
             if ad.from_wire == from {
                 if bits != ad.bits {
-                    panic!(
+                    emit_bit_change_error!(
                         "Bit conflict for {}.{}<-{} existing: {:?} new: {:?}",
                         self.tiletype, from, to, ad.bits, bits
                     );
                 }
+
+                info!("Pip {from} -> {to} already exists for {}", self.tiletype);
                 return;
             }
         }
         self.dirty = true;
+        info!("Inserting new pip {from} -> {to}");
         ac.push(ConfigPipData {
             from_wire: from.to_string(),
             bits: bits.clone(),
@@ -363,7 +388,7 @@ impl TileBitsData {
                     word.desc = desc.to_string();
                 }
                 if bits.len() != word.bits.len() {
-                    panic!(
+                    emit_bit_change_error!(
                         "Width conflict {}.{} existing: {:?} new: {:?}",
                         self.tiletype,
                         name,
@@ -373,7 +398,7 @@ impl TileBitsData {
                 }
                 for (bit, (e, n)) in word.bits.iter().zip(bits.iter()).enumerate() {
                     if e != n {
-                        panic!(
+                        emit_bit_change_error!(
                             "Bit conflict for {}.{}[{}] existing: {:?} new: {:?}",
                             self.tiletype, name, bit, e, n
                         );
@@ -382,12 +407,24 @@ impl TileBitsData {
             }
         }
     }
+
+    pub fn set_bel_offset(&mut self, bel_relative_location : Option<(i32, i32)>) {
+        if self.db.bel_relative_location.is_some() && self.db.bel_relative_location != bel_relative_location {
+            emit_bit_change_error!(
+                "Bel offset conflict for {}. existing: {:?} new: {:?}",
+                self.tiletype, self.db.bel_relative_location, bel_relative_location
+            );
+        }
+        info!("Setting bel offset {} {:?}", self.tiletype, bel_relative_location);
+        self.db.bel_relative_location = bel_relative_location;
+        self.dirty = true;
+    }
     pub fn add_enum_option(
         &mut self,
         name: &str,
         option: &str,
         desc: &str,
-        bits: BTreeSet<ConfigBit>,
+        bits: BTreeSet<ConfigBit>
     ) {
         if !self.db.enums.contains_key(name) {
             self.db.enums.insert(
@@ -406,7 +443,7 @@ impl TileBitsData {
         match ec.options.get(option) {
             Some(old_bits) => {
                 if bits != *old_bits {
-                    panic!(
+                    emit_bit_change_error!(
                         "Bit conflict for {}.{}={} existing: {:?} new: {:?}",
                         self.tiletype, name, option, old_bits, bits
                     );
@@ -425,7 +462,9 @@ impl TileBitsData {
         let pc = self.db.conns.get_mut(to).unwrap();
         if pc.iter().any(|fc| fc.from_wire == from) {
             // Connection already exists
+            info!("Connection {from} already exists {}", self.tiletype);
         } else {
+            info!("Connection {from} added {}", self.tiletype);
             self.dirty = true;
             pc.push(FixedConnectionData {
                 from_wire: from.to_string(),
@@ -616,6 +655,7 @@ impl Database {
                     enums: BTreeMap::new(),
                     conns: BTreeMap::new(),
                     always_on: BTreeSet::new(),
+                    bel_relative_location : None
                 }
             };
             self.tilebits
@@ -639,6 +679,7 @@ impl Database {
                     enums: BTreeMap::new(),
                     conns: BTreeMap::new(),
                     always_on: BTreeSet::new(),
+                    bel_relative_location : None
                 }
             };
             self.ipbits

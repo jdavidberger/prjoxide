@@ -4,12 +4,17 @@ use crate::database::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::iter::FromIterator;
 
+use ron::ser::PrettyConfig;
+use std::fs::File;
+use std::io::prelude::*;
+use serde::Serialize;
+
 pub enum IPFuzzMode {
     Word { name: String, width: usize, inverted_mode: bool },
     Enum { name: String },
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(Serialize, PartialEq, Eq, PartialOrd, Ord, Clone)]
 enum IPFuzzKey {
     WordKey { bits: Vec<bool> },
     EnumKey { option: String },
@@ -176,5 +181,24 @@ impl IPFuzzer {
             }
         }
         db.flush();
+    }
+
+    pub fn serialize_deltas(&mut self, filename: &str) {
+            let pretty = PrettyConfig {
+                depth_limit: 5,
+                new_line: "\n".to_string(),
+                indentor: "  ".to_string(),
+                enumerate_arrays: false,
+                separate_tuple_members: false,
+            };
+
+            let buf = ron::ser::to_string_pretty(&self.deltas, pretty).unwrap();
+            File::create(format!(
+                "{}.ron",
+		filename
+            ))
+            .unwrap()
+            .write_all(buf.as_bytes())
+            .unwrap();
     }
 }

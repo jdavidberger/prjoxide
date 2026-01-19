@@ -1,6 +1,7 @@
-use std::collections::BTreeSet;
 use crate::chip::*;
 use crate::database::TileBitsDatabase;
+use itertools::Itertools;
+use std::collections::BTreeSet;
 use std::convert::TryInto;
 
 // A reference to a wire in a relatively located tile
@@ -405,7 +406,7 @@ impl Bel {
         }
     }
 
-    pub fn make_seio18(z: usize) -> Bel {
+    pub fn make_seio18_relative(z: usize, rel: (i32, i32)) -> Bel {
         let ch = Z_TO_CHAR[z];
         let postfix = if z == 1 {
             format!("SEIO18_CORE_IO{}", ch)
@@ -439,10 +440,14 @@ impl Bel {
                 output!(&postfix, "INLP", "DPHY LP mode input buffer output"),
                 output!(&postfix, "INADC", "analog signal out to ADC"),
             ],
-            rel_x: 0,
-            rel_y: 0,
+            rel_x: rel.0,
+            rel_y: rel.1,
             z: z as u32,
         }
+    }
+
+    pub fn make_seio18(z: usize) -> Bel {
+        Self::make_seio18_relative(z, (0, 0))
     }
 
     pub fn make_diffio18() -> Bel {
@@ -670,18 +675,19 @@ pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
             })
             .flatten()
             .collect(),
-        "SYSIO_B0_0" | "SYSIO_B1_0" | "SYSIO_B1_0_C" | "SYSIO_B2_0" | "SYSIO_B2_0_C"
-        | "SYSIO_B6_0" | "SYSIO_B6_0_C" | "SYSIO_B7_0" | "SYSIO_B7_0_C"
-        | "SYSIO_B0_0_15K" | "SYSIO_B1_0_15K" => {
-            vec![Bel::make_seio33(0), Bel::make_seio33(1), Bel::make_iol(tiledata, true, 0), Bel::make_iol(tiledata, true, 1)]
-        },
-        "SYSIO_B1_DED" | "SYSIO_B1_DED_15K" => vec![Bel::make_seio33(1)],
-        "SYSIO_B3_0" | "SYSIO_B3_0_DLY30_V18" | "SYSIO_B3_0_DQS1" | "SYSIO_B3_0_DQS3"
-        | "SYSIO_B4_0" | "SYSIO_B4_0_DQS1" | "SYSIO_B4_0_DQS3" | "SYSIO_B4_0_DLY50" | "SYSIO_B4_0_DLY42"
-        |  "SYSIO_B5_0" | "SYSIO_B5_0_15K_DQS52" | "SYSIO_B4_0_15K_DQS42"
-        | "SYSIO_B4_0_15K_BK4_V42" | "SYSIO_B4_0_15K_V31" | "SYSIO_B3_0_15K_DQS32" => vec![Bel::make_seio18(0), Bel::make_seio18(1), Bel::make_diffio18(),
-            Bel::make_iol(tiledata, false, 0), Bel::make_iol(tiledata, false, 1)],
-        "EFB_1_OSC" | "OSC_15K" => vec![Bel::make_osc_core()],
+        // "SYSIO_B0_0" | "SYSIO_B1_0" | "SYSIO_B1_0_C" | "SYSIO_B2_0" | "SYSIO_B2_0_C"
+        // | "SYSIO_B6_0" | "SYSIO_B6_0_C" | "SYSIO_B7_0" | "SYSIO_B7_0_C"
+        // | "SYSIO_B0_0_15K" | "SYSIO_B1_0_15K" => {
+        //     vec![Bel::make_seio33(0), Bel::make_seio33(1), Bel::make_iol(tiledata, true, 0), Bel::make_iol(tiledata, true, 1)]
+        // },
+      //   "SYSIO_B1_DED" | "SYSIO_B1_DED_15K" => vec![Bel::make_seio33(1)],
+      //   "SYSIO_B3_0" | "SYSIO_B3_0_DLY30_V18" | "SYSIO_B3_0_DQS1" | "SYSIO_B3_0_DQS3"
+      //   | "SYSIO_B4_0" | "SYSIO_B4_0_DQS1" | "SYSIO_B4_0_DQS3" | "SYSIO_B4_0_DLY50" | "SYSIO_B4_0_DLY42"
+      //   |  "SYSIO_B5_0" | "SYSIO_B5_0_15K_DQS52" | "SYSIO_B4_0_15K_DQS42"
+      //   | "SYSIO_B4_0_15K_BK4_V42" | "SYSIO_B4_0_15K_V31" | "SYSIO_B3_0_15K_DQS32" =>
+	  // vec![Bel::make_seio18(0), Bel::make_seio18(1), Bel::make_diffio18(), Bel::make_iol(tiledata, false, 0), Bel::make_iol(tiledata, false, 1)],
+
+        "EFB_1_OSC" | "OSC_15K" | "OSC"	 => vec![Bel::make_osc_core()],
         "EBR_1" => vec![Bel::make_ebr(&tiledata, 0)],
         "EBR_4" => vec![Bel::make_ebr(&tiledata, 1)],
         "EBR_7" => vec![Bel::make_ebr(&tiledata, 2)],
@@ -738,7 +744,7 @@ pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
         "RMID_DLY20" | "RMID_PICB_DLY10" => (0..12).map(|x| Bel::make_dcc("R", x)).collect(),
         "TMID_0" => (0..16).map(|x| Bel::make_dcc("T", x)).collect(),
         "BMID_0_ECLK_1" => (0..18).map(|x| Bel::make_dcc("B", x)).collect(),
-        "CMUX_0" => {
+        "CMUX_0" | "CMUX_0_TL" | "CMUX_1_GSR_TR" | "CMUX_2" | "CMUX_3" => {
                 let mut bels = (0..4).map(|x| Bel::make_dcc("C", x)).collect::<Vec<Bel>>();
                 bels.push(Bel::make_dcs());
                 bels
@@ -756,10 +762,40 @@ pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
         "LRAM_2_15K" => vec![Bel::make_lram_core("LRAM2", &tiledata, 0, -1)],
         "LRAM_3_15K" => vec![Bel::make_lram_core("LRAM3", &tiledata, 0, -1)],
         "LRAM_4_15K" => vec![Bel::make_lram_core("LRAM4", &tiledata, 0, -1)],
+        
+        "LRAM_0_33K" => vec![Bel::make_lram_core("LRAM0", &tiledata, -1, 0)],
+        "LRAM_1_33K" => vec![Bel::make_lram_core("LRAM1", &tiledata, -1, 0)],
+        "LRAM_2_33K" => vec![Bel::make_lram_core("LRAM2", &tiledata, -1, 0)],
+        "LRAM_3_33K" => vec![Bel::make_lram_core("LRAM3", &tiledata, -1, 0)],
+        "LRAM_4_33K" => vec![Bel::make_lram_core("LRAM4", &tiledata, -1, 0)],
 
         "MIPI_DPHY_0" => vec![Bel::make_dphy_core("TDPHY_CORE2", &tiledata, -2, 0)],
         "MIPI_DPHY_1" => vec![Bel::make_dphy_core("TDPHY_CORE26", &tiledata, -2, 0)],
-        _ => vec![],
+        _ => {
+            let bel_relative_location = tiledata.bel_relative_location.unwrap_or((0, 0));
+            if bel_relative_location == (0, 0) {
+                let enum_bels = tiledata.enums.iter().flat_map(|(key, _value)|match key.as_str() {
+                    "PIOA.BASE_TYPE" => vec![Bel::make_seio33(0)],
+                    "PIOB.BASE_TYPE" => vec![Bel::make_seio33(1)],
+                    "PIOA.SEIO18.BASE_TYPE" => vec![Bel::make_seio18_relative(0, bel_relative_location)],
+                    "PIOB.SEIO18.BASE_TYPE" => vec![Bel::make_seio18_relative(1, bel_relative_location)],
+                    "PIOA.DIFFIO18.BASE_TYPE" => vec![Bel::make_diffio18()],
+                    "PIOB.DIFFIO18.BASE_TYPE" => vec![Bel::make_diffio18()],
+                    "SIOLOGICA.GSR" => vec![Bel::make_iol(tiledata, true, 0)],
+                    "SIOLOGICB.GSR" => vec![Bel::make_iol(tiledata, true, 1)],
+                    "IOLOGICA.GSR" => vec![Bel::make_iol(tiledata, false, 0)],
+                    "IOLOGICB.GSR" => vec![Bel::make_iol(tiledata, false, 1)],
+                    _ => vec![]
+                });
+                let inferred_bels = enum_bels.collect_vec();
+                if inferred_bels.is_empty() {
+                    println!("No BEL for tile type {}", &stt);
+                }
+                inferred_bels
+            } else {
+                vec![]
+            }
+	  },
     }
 }
 

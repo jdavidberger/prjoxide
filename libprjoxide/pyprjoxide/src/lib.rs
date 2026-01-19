@@ -13,9 +13,10 @@ use prjoxide::docs;
 use prjoxide::fuzz;
 use prjoxide::ipfuzz;
 use prjoxide::nodecheck;
-use prjoxide::wires;
 use prjoxide::pip_classes;
 use prjoxide::sites;
+use prjoxide::wires;
+
 
 #[pyclass]
 struct Database {
@@ -35,6 +36,7 @@ impl Database {
 #[pyclass]
 struct Fuzzer {
     fz: fuzz::Fuzzer,
+    name: String,
 }
 
 #[pymethods]
@@ -64,6 +66,7 @@ impl Fuzzer {
                 width,
                 zero_bitfile,
             ),
+            name: name.to_string()
         }
     }
 
@@ -96,6 +99,7 @@ impl Fuzzer {
                 full_mux,
                 skip_fixed,
             ),
+            name: to_wire.to_string()
         }
     }
 
@@ -108,6 +112,7 @@ impl Fuzzer {
         desc: &str,
         include_zeros: bool,
         assume_zero_base: bool,
+        mark_relative_to: Option<String>
     ) -> Fuzzer {
         let base_chip = bitstream::BitstreamParser::parse_file(&mut db.db, base_bitfile).unwrap();
 
@@ -122,7 +127,9 @@ impl Fuzzer {
                 desc,
                 include_zeros,
                 assume_zero_base,
+                mark_relative_to
             ),
+            name: name.to_string()
         }
     }
 
@@ -134,12 +141,24 @@ impl Fuzzer {
         self.fz.add_pip_sample(&mut db.db, from_wire, base_bitfile);
     }
 
+    fn add_pip_sample_with_partial_delta(&mut self, db: &mut Database, from_wire: &str, base_bitfile: &str) {
+        self.fz.add_pip_sample_with_partial_delta(&mut db.db, from_wire, base_bitfile);
+    }
+
     fn add_enum_sample(&mut self, db: &mut Database, option: &str, base_bitfile: &str) {
         self.fz.add_enum_sample(&mut db.db, option, base_bitfile);
     }
 
     fn solve(&mut self, db: &mut Database) {
         self.fz.solve(&mut db.db);
+    }
+
+    fn serialize_deltas(&mut self, filename: &str) {
+        self.fz.serialize_deltas(filename);
+    }
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }
 
@@ -214,6 +233,10 @@ impl IPFuzzer {
     fn solve(&mut self, db: &mut Database) {
         self.fz.solve(&mut db.db);
     }
+
+    fn serialize_deltas(&mut self, filename: &str) {
+        self.fz.serialize_deltas(filename);
+    }
 }
 
 #[pyfunction]
@@ -271,6 +294,11 @@ impl Chip {
 
     fn get_ip_values(&mut self) -> Vec<(u32, u8)> {
         self.c.ipconfig.iter().map(|(a, d)| (*a, *d)).collect()
+    }
+
+    fn delta(&self, db: &mut Database, new_bitstream: &str) -> PyResult<chip::ChipDelta> {
+        let parsed_bitstream = bitstream::BitstreamParser::parse_file(&mut db.db, new_bitstream).unwrap();
+        Ok(parsed_bitstream.delta(&self.c))
     }
 }
 

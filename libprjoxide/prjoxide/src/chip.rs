@@ -142,10 +142,7 @@ impl Chip {
             tilegroups: HashMap::new(),
             metadata: Vec::new(),
             settings: BTreeMap::new(),
-            tap_frame_count: match device {
-                "LFCPNX-100" => 42,
-                _ => 24,
-            }
+            tap_frame_count: if data.tap_frame_count == 0 { 24 } else { data.tap_frame_count }
         };
         c.tiles_by_name = c
             .tiles
@@ -222,8 +219,14 @@ impl Chip {
                 chip.configure_ip(ip_name, db, ft);
             } else if chip.tilegroups.contains_key(tn) {
                 chip.apply_tilegroup(tn, db, ft);
+            } else if let Ok(tile) = chip.tile_by_name_mut(tn) {
+                tile.from_fasm(db, ft);
             } else {
-                chip.tile_by_name_mut(tn).unwrap().from_fasm(db, ft);
+                error!("Unknown tile {}", tn);
+                error!("Tile groups: ");
+                chip.tilegroups.iter().for_each(|(k, _)| {
+                    error!("- {}", k);
+                });
             }
         }
         chip.tiles_to_cram();
@@ -236,6 +239,12 @@ impl Chip {
                 .copy_from_window(&self.cram, t.start_frame, t.start_bit);
         }
     }
+    pub fn tile_by_frame_and_bit(&mut self, frame : usize, bit : usize)-> Result<&Tile, &'static str> {
+        self.tiles.iter().find(|x| x.start_frame <= frame && x.start_frame + x.cram.frames > frame &&
+            x.start_bit <= bit && x.start_bit + x.cram.bits > bit).ok_or("No tile for query")
+        //self.tiles.iter().find(|x| x.start_frame == frame && x.start_bit >= bit).ok_or("No tile for query")
+    }
+
     // Copy the per-tile CRAM windows to the whole chip CRAM
     pub fn tiles_to_cram(&mut self) {
         for t in self.tiles.iter() {
@@ -321,12 +330,30 @@ impl Chip {
         }
     }
     // Convert frame address to flat frame index
+    // The tiles are set indexed in one way, and then the addressing is done in a different way
+    // addressing:
+    // 0x0000 -> 0x7fff -> cram.frames -> R_SIDE_IO_END
+    // 0x8000 -> 0x800f -> R_SIDE_IO_END -> R_SIDE_IO_START
+    // 0x8010 -> 0x801f -> L_SIDE_IO_END -> L_SIDE_IO_START
+    // 0x8020 -> 0x81ff -> TAP_END -> TAP_START
+    //
+    // The tile stack ups typically are:
+    //  0:  L_SIDE_IO_START
+    //   :  L_SIDE_IO_END
+    // 16:  TAP_START
+    //   :  TAP_END
+    // XX:  R_SIDE_IO_START
+    // XX:  R_SIDE_IO_END
+    // XX:  ...
+    //      cram.frames
+    //
+    // Most chips seem to have the same number of IO frames -- 16 but the tap frames varies.
     pub fn frame_addr_to_idx(&self, addr: u32) -> usize {
         match addr {
-            0x0000..=0x7FFF => (self.cram.frames - 1) - (addr as usize),
-            0x8000..=0x800F => (15 - ((addr - 0x8000) as usize)) + (16 + self.tap_frame_count), // right side IO
-            0x8010..=0x801F => (15 - ((addr - 0x8010) as usize)) + 0,  // left side IO
-            0x8020..=0x81FF => ((self.tap_frame_count - 1) - ((addr - 0x8020) as usize)) + 16, // TAPs (row-segment clocking)
+            0x0000..=0x7FFF => (self.cram.frames - 1) - (addr as usize), // 56 -> ???
+            0x8000..=0x800F => (15 - ((addr - 0x8000) as usize)) + (16 + self.tap_frame_count), // right side IO  40->55
+            0x8010..=0x801F => (15 - ((addr - 0x8010) as usize)) + 0,  // left side IO // 0 -> 15
+            0x8020..=0x81FF => ((self.tap_frame_count - 1) - ((addr - 0x8020) as usize)) + 16, // TAPs (row-segment clocking) 16 -> 39
             _ => panic!("unable to process frame address 0x{:08x}", addr),
         }
     }
@@ -343,7 +370,7 @@ impl Chip {
         }
     }
     // Convert a long package name to a short one
-    pub fn get_package_short_name(long_name: &str) -> String {
+    pub fn get_package_short_name(long_name: &str, device: &str) -> String {
         if long_name.starts_with("CABGA") {
             format!("BG{}", &long_name[5..])
         } else if long_name.starts_with("CSBGA") {
@@ -352,8 +379,12 @@ impl Chip {
             format!("MG{}", &long_name[6..])
         } else if long_name.starts_with("QFN") {
             format!("SG{}", &long_name[3..])
-        } else if long_name.starts_with("WLCSP") {
+        } else if long_name.starts_with("WLCSP") && !device.starts_with("LIFCL-33") {
             format!("UWG{}", &long_name[5..])
+        } else if long_name.starts_with("WLCSP") {
+            format!("USG{}", &long_name[5..])
+        } else if long_name.starts_with("FCC") {
+            format!("CTG{}", &long_name[5..])	    
         } else {
             panic!("unknown package name {}", &long_name);
         }
@@ -427,6 +458,10 @@ Please make sure Oxide and nextpnr are up to date and input source code is meani
                     }
                 }
                 if !found {
+                    println!("Tilegroup {group} tiles:");
+                    tg.iter().for_each(|tile| {
+                        println!(" - {tile}");
+                    });
                     panic!("No enum named {} in tilegroup {}.\n\
 Please make sure Oxide and nextpnr are up to date. If they are, consider reporting this as an issue.", k, group);
                 }
