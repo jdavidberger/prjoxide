@@ -82,18 +82,22 @@ def main(argv):
     tap_frame_to_col = get_tf2c(args.device)
 
     def fixup(tiletype):
-        if (args.device.find("-33") > 0):
+        if args.device.find("-33") > 0:
             tiletypes_with_variants = ["LRAM_", "SYSIO_B1_DED", "SPINE_"]
             for v in tiletypes_with_variants:
                 if tiletype.startswith(v):
                     return tiletype + "_33K"
+        elif args.device.find("-33U") > 0:
+            if tiletype == "OSC":
+                return "OSCD"
+
         return tiletype
     
     for line in args.infile:
         tile_m = tile_re.match(line)
         if tile_m:
             name = tile_m.group(6)
-            tiletype = fixup(tile_m.group(1)),
+            tiletype = fixup(tile_m.group(1))
             current_tile = {
                 "tiletype": tiletype,
                 "start_bit": int(tile_m.group(4)),
@@ -114,6 +118,7 @@ def main(argv):
             else:
                 current_tile["y"] = int(s.group(1))
                 current_tile["x"] = int(s.group(2))
+
             identifier = name + ":" + tiletype
             assert identifier not in tiles
             tiles[identifier] = current_tile

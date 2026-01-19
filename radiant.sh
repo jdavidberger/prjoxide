@@ -31,7 +31,7 @@ case "${PART}" in
 		PACKAGE="${DEV_PACKAGE:-WLCSP84}"
 		DEVICE="LIFCL-33"
 		LSE_ARCH="lifcl"
-		SPEED_GRADE="${SPEED_GRADE:-7_High-Performance_1.0V}"
+		SPEED_GRADE="${SPEED_GRADE:-8_High-Performance_1.0V}"
 		;;	
 	LIFCL-33U)
 		PACKAGE="${DEV_PACKAGE:-FCCSP104}"

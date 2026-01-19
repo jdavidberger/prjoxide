@@ -270,7 +270,7 @@ def get_pips_for_tile(device, tilename, owned = False, dir = None):
         (p.from_wire,
          p.to_wire)
         for (n,r) in routes.items()
-        for p in pips()
+        for p in pips(r)
     ]))
 
 def get_connected_tiles(device, tilename):    

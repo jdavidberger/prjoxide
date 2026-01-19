@@ -28,8 +28,7 @@ def run_cfg(device):
     fuzz_interconnect(config=cfg, nodenames=extra_sources, regex=True, bidir=False)#, ignore_tiles=set(["TAP_PLC_R16C14:TAP_PLC"]))
 
 def main():
-    for device in ["LIFCL-33"]:
-        run_cfg(device)
+    run_cfg("LIFCL-40")
     
 if __name__ == "__main__":
     main()

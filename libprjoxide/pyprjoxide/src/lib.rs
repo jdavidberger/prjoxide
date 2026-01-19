@@ -375,6 +375,8 @@ fn classify_pip(src_x: i32, src_y: i32, src_name: &str, dst_x: i32, dst_y: i32, 
 
 #[pymodule]
 fn libpyprjoxide(_py: Python, m: &PyModule) -> PyResult<()> {
+    env_logger::init();
+
     m.add_wrapped(wrap_pyfunction!(parse_bitstream))?;
     m.add_wrapped(wrap_pyfunction!(write_tilegrid_html))?;
     m.add_wrapped(wrap_pyfunction!(write_region_html))?;

@@ -65,8 +65,11 @@ flagged and changed when the tilegrid is imported from lattice's interchange for
 
 ## Global Routes
 
-PLC -> Branch Tap -> Branch Node -> Spine -> HROW
+There is a global distribution network on the LIFCL devices for clocks and resets to limit skew to any given logic cell:
 
-There is a global distribution network on the LIFCL devices which is laid out as follows:
+- Starts at CMUX 
+- Distributed along HROW's to SPINEs
+- SPINEs push to branch nodes
+- Branch nodes push out left or right into PLCs
 
-- 
+See global.json for a listing of those cells for each device.

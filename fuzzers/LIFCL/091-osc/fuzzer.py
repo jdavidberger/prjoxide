@@ -7,20 +7,16 @@ import tiles
 
 cfgs = [
     FuzzConfig(job="OSCMODE17", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R0C71:OSC_15K"]),
-    FuzzConfig(job="OSCMODE33", device="LIFCL-33", sv="../shared/empty_33.v", tiles=["CIB_R0C29:OSC"]),    
-#    FuzzConfig(job="OSCMODE40", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C77:EFB_1_OSC"]),
+    FuzzConfig(job="OSCMODE33", device="LIFCL-33", sv="../shared/empty_33.v", tiles=["CIB_R0C29:OSC"]),
+    FuzzConfig(job="OSCMODE33U", device="LIFCL-33U", sv="../shared/empty_33.v", tiles=["CIB_R0C29:OSC"]),        
+    FuzzConfig(job="OSCMODE40", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C77:EFB_1_OSC"]),
 ]
 
 def main():
     for cfg in cfgs:
         cfg.setup()
         empty = cfg.build_design(cfg.sv, {})
-        if cfg.device == "LIFCL-40":
-            cfg.sv = "osc.v"
-        elif cfg.device.startswith("LIFCL-33"):
-            cfg.sv = "osc_33.v"            
-        else:
-            cfg.sv = "osc_17.v"
+        cfg.sv = "osc.v"
 
         def bin_to_int(x):
             val = 0
@@ -31,6 +27,9 @@ def main():
                 mul *= 2
             return val
 
+        sites = tiles.get_sites_from_primitive(cfg.device, "OSC_CORE")
+        site = list(sites.keys())[0]
+        
         def get_substs(mode="NONE", default_cfg=False, kv=None, mux=False):
             if kv is None:
                 config = ""
@@ -43,7 +42,7 @@ def main():
                 config = "{}::::{}={}".format(mode, kv[0], val)
             else:
                 config = "{}:::{}={}".format(mode, kv[0], kv[1])
-            return dict(mode=mode, cmt="//" if mode == "NONE" else "", config=config)
+            return dict(mode=mode, cmt="//" if mode == "NONE" else "", config=config, site=site)
         nonrouting.fuzz_enum_setting(cfg, empty, "OSC_CORE.MODE", ["NONE", "OSC_CORE"],
             lambda x: get_substs(mode=x), False,
             desc="OSC_CORE primitive mode")
@@ -53,6 +52,7 @@ def main():
         nonrouting.fuzz_word_setting(cfg, "OSC_CORE.HF_SED_SEC_DIV", 8,
             lambda x: get_substs(mode="OSC_CORE", kv=("HF_SED_SEC_DIV", str(bin_to_int(x)))),
             desc="high frequency oscillator output divider")
+
         nonrouting.fuzz_enum_setting(cfg, empty, "OSC_CORE.DTR_EN", ["ENABLED", "DISABLED"],
             lambda x: get_substs(mode="OSC_CORE", kv=("DTR_EN", x)), False,
             desc="")

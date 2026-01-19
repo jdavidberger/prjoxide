@@ -9,6 +9,9 @@ import fuzzconfig
 import fuzzloops
 import os
 
+from primitives import EnumSetting
+
+
 def fuzz_word_setting(config, name, length, get_sv_substs, desc=""):
     """
     Fuzz a multi-bit setting, such as LUT initialisation
@@ -130,4 +133,32 @@ def fuzz_ip_enum_setting(config, empty_bitfile, name, values, get_sv_substs, des
 
     config.solve(fz)
 
-    
+
+def fuzz_primitive_definition(cfg, empty, site, primitive, mark_relative_to = None, mode_name = None, get_substs=None):
+    def default_get_substs(mode="NONE", kv=None):
+        if kv is None:
+            config = ""
+        else:
+            key = kv[0]
+            if key.endswith("MUX"):
+                key = ":" + key[:-3]
+            config = f"{mode}:::{key}={kv[1]}"
+        return dict(cmt="//" if mode == "NONE" else "",
+                    config=config,
+                    site=site)
+    if get_substs is None:
+        get_substs = default_get_substs
+
+    if mode_name is None:
+        mode_name = primitive.name
+
+    for setting in primitive.settings:
+        subs_fn = lambda x, name=setting.name: get_substs(mode=mode_name, kv=(name, x))
+        if setting.name == "MODE":
+            subs_fn = lambda x: get_substs(mode=x)
+
+        if isinstance(setting, EnumSetting):
+            fuzz_enum_setting(cfg, empty, f"{mode_name}.{setting.name}", setting.values, subs_fn,False,
+            desc=setting.desc, mark_relative_to=mark_relative_to)
+
+

@@ -9,7 +9,7 @@ import subprocess
 import database
 import sys
 
-def run_bash_script(env, *args, cwd = None):
+def run_bash_script(env, *args, cwd = None, stdout = subprocess.PIPE, stderr = subprocess.PIPE):
     slug = " ".join(args[1:])
     logging.info("Running script: %s", slug)
 
@@ -17,8 +17,8 @@ def run_bash_script(env, *args, cwd = None):
         args=["bash", *args],
         env=env,
         cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stdout=stdout,
+        stderr=subprocess.PIPE,
     )
 
     stdout, stderr = proc.stdout, proc.stderr
@@ -28,8 +28,9 @@ def run_bash_script(env, *args, cwd = None):
 
     if show_output or True:
         for stream in [("", stdout, sys.stdout), ("ERR:", stderr, sys.stdout)]:
-            for l in stream[1].decode().splitlines():
-                print(f"[{stream[0]} {slug}] {l}", file=stream[2])
+            if stream[1] is not None:
+                for l in stream[1].decode().splitlines():
+                    print(f"[{stream[0]} {slug}] {l}", file=stream[2])
 
     if returncode != 0:
         raise Exception(f"Error encountered running radiant: {slug}")

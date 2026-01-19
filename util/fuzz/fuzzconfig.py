@@ -21,7 +21,7 @@ PLATFORM_FILTER = os.environ.get("FUZZER_PLATFORM", None)
 
 _platform_skip_warnings = set()
 def should_fuzz_platform(device):
-    if PLATFORM_FILTER is not None and PLATFORM_FILTER != device:
+    if PLATFORM_FILTER is not None and PLATFORM_FILTER not in device:
         if device not in _platform_skip_warnings:
             print(f"FUZZER_PLATFORM set to {PLATFORM_FILTER}, skipping {device}")
         _platform_skip_warnings.add(device)
@@ -43,9 +43,9 @@ class FuzzConfig:
         if sv is None:
             family = device.split("-")[0]
             suffix = device.split("-")[1]
-            sv = database.get_db_root() + f"/../fuzzers/{family}/shared/empty_{suffix}.v"
+            sv = database.get_db_root() + f"/../fuzzers/{family}/shared/empty.v"
         self.sv = sv
-        self.rbk_mode = True if self.device == "LFCPNX-100" else False
+        self.rbk_mode = True if self.device == "LFCPNX-100" or self.device == "LIFCL-33U" else False
         self.struct_mode = True
         self.udb_specimen = None
 
@@ -63,9 +63,9 @@ class FuzzConfig:
 
     def check_deltas(self, name):
         if os.path.exists(f"./.deltas/{name}{self.job}_{self.device}.ron"):
-            print(f"Delta exists for {name} {self.job} {self.device}; skipping")
+            logging.info(f"Delta exists for {name} {self.job} {self.device}; skipping")
             return True
-        print(f"./.deltas/{name}{self.job}_{self.device}.ron miss")
+        logging.debug(f"./.deltas/{name}{self.job}_{self.device}.ron miss")
         return False
 
     def solve(self, fz):

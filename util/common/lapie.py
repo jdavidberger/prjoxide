@@ -60,7 +60,7 @@ def run(commands, workdir=None, stdout=None):
     env = os.environ.copy()
     env[dev_enable_name] = "1"
 
-    result_struct = run_bash_script(env, rcmd_path, tcltool, scriptfile, cwd=workdir)
+    result_struct = run_bash_script(env, rcmd_path, tcltool, scriptfile, cwd=workdir, stdout=stdout)
 
     result = result_struct.returncode
 

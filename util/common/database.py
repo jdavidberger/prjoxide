@@ -58,7 +58,11 @@ def get_tilegrid(family, device = None):
         tgjson = path.join(get_db_subdir(family, device), "tilegrid.json")
         if path.exists(tgjson):
             with open(tgjson, "r") as f:
-                _tilegrids[device] = json.load(f)
+                try:
+                    _tilegrids[device] = json.load(f)
+                except:
+                    print(f"Exception encountered reading {tgjson}")
+                    raise
         else:
             _tilegrids[device] = {"tiles":{}}
     return _tilegrids[device]
