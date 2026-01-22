@@ -519,6 +519,17 @@ impl Bel {
         }
     }
 
+    pub fn make_config(tiledata: &TileBitsDatabase, name: &str, postfix : &str, rel_x: i32, rel_y: i32, z: u32) -> Bel {
+        Bel {
+            name: name.to_string(),
+            beltype:  name.to_string(),
+            pins: Bel::get_io(&tiledata, postfix, rel_x, rel_y),
+            rel_x: rel_x,
+            rel_y: rel_y,
+            z: z,
+        }
+    }
+
     pub fn make_iol(tiledata: &TileBitsDatabase, s: bool, z: usize) -> Bel {
         let ch = Z_TO_CHAR[z];
         let postfix = if s {
@@ -681,6 +692,18 @@ pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
         |  "SYSIO_B5_0" | "SYSIO_B5_0_15K_DQS52" | "SYSIO_B4_0_15K_DQS42"
         | "SYSIO_B4_0_15K_BK4_V42" | "SYSIO_B4_0_15K_V31" | "SYSIO_B3_0_15K_DQS32" => vec![Bel::make_seio18(0), Bel::make_seio18(1), Bel::make_diffio18(),
             Bel::make_iol(tiledata, false, 0), Bel::make_iol(tiledata, false, 1)],
+        "EFB_0" => vec![
+            Bel::make_config(&tiledata, "CONFIG_MULTIBOOT_CORE", "_CONFIG_MULTIBOOT_CORE_CONFIG_MULTIBOOT", -2, 0, 0),
+            Bel::make_config(&tiledata, "CONFIG_HSE_CORE", "_CONFIG_HSE_CORE_CONFIG_HSE", -2, 0, 1),
+            Bel::make_config(&tiledata, "CONFIG_LMMI_CORE", "_CONFIG_LMMI_CORE_LMMI_MODEL", -2, 0, 2),
+
+        ],
+        "EFB_15K" => vec![
+            Bel::make_config(&tiledata, "CONFIG_MULTIBOOT_CORE", "_CONFIG_MULTIBOOT_CORE_CONFIG_MULTIBOOT", -14, 0, 0),
+            Bel::make_config(&tiledata, "CONFIG_HSE_CORE", "_CONFIG_CRE_CORE_CONFIG_HSE", -14, 0, 1),
+            Bel::make_config(&tiledata, "CONFIG_LMMI_CORE", "_CONFIG_LMMI_CORE_LMMI_MODEL", -14, 0, 2),
+        ],
+
         "EFB_1_OSC" | "OSC_15K" => vec![Bel::make_osc_core()],
         "EBR_1" => vec![Bel::make_ebr(&tiledata, 0)],
         "EBR_4" => vec![Bel::make_ebr(&tiledata, 1)],
@@ -831,6 +854,14 @@ pub fn get_bel_tiles(chip: &Chip, tile: &Tile, bel: &Bel) -> Vec<String> {
                 _ => panic!("bad DCC_B tile {}", &tile.tiletype)
             }
             _ => {
+                vec![tn]
+            }
+        },
+        "CONFIG_MULTIBOOT_CORE" => match tt {
+            "EFB_0" => {
+                vec![tn, rel_tile_prefix(4, 0, "EFB_2")]
+            },
+            _ => { // default: -17 case
                 vec![tn]
             }
         }

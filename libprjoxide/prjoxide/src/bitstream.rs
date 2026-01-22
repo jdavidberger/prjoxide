@@ -133,6 +133,9 @@ impl BitstreamParser {
             if k == "background" && v == "1" {
                 ctrl0 |= 0x27800000;
             }
+            if k == "multiboot" && v == "1" {
+                ctrl0 |= 1 << 19;
+            }
         }
         b.write_byte(LSC_PROG_CNTRL0);
         b.write_zeros(3);
