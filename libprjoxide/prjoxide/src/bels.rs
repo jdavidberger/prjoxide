@@ -696,12 +696,14 @@ pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
             Bel::make_config(&tiledata, "CONFIG_MULTIBOOT_CORE", "_CONFIG_MULTIBOOT_CORE_CONFIG_MULTIBOOT", -2, 0, 0),
             Bel::make_config(&tiledata, "CONFIG_HSE_CORE", "_CONFIG_HSE_CORE_CONFIG_HSE", -2, 0, 1),
             Bel::make_config(&tiledata, "CONFIG_LMMI_CORE", "_CONFIG_LMMI_CORE_LMMI_MODEL", -2, 0, 2),
+            Bel::make_config(&tiledata, "CONFIG_CLKRST_CORE", "_CONFIG_CLKRST_CORE_CONFIG_CLKRST", -2, 0, 3),
 
         ],
         "EFB_15K" => vec![
             Bel::make_config(&tiledata, "CONFIG_MULTIBOOT_CORE", "_CONFIG_MULTIBOOT_CORE_CONFIG_MULTIBOOT", -14, 0, 0),
             Bel::make_config(&tiledata, "CONFIG_HSE_CORE", "_CONFIG_CRE_CORE_CONFIG_HSE", -14, 0, 1),
             Bel::make_config(&tiledata, "CONFIG_LMMI_CORE", "_CONFIG_LMMI_CORE_LMMI_MODEL", -14, 0, 2),
+            Bel::make_config(&tiledata, "CONFIG_CLKRST_CORE", "_CONFIG_CLKRST_CORE_CONFIG_CLKRST", -14, 0, 3),
         ],
 
         "EFB_1_OSC" | "OSC_15K" => vec![Bel::make_osc_core()],
@@ -857,9 +859,9 @@ pub fn get_bel_tiles(chip: &Chip, tile: &Tile, bel: &Bel) -> Vec<String> {
                 vec![tn]
             }
         },
-        "CONFIG_MULTIBOOT_CORE" => match tt {
+        "CONFIG_MULTIBOOT_CORE" | "CONFIG_LMMI_CORE" | "CONFIG_CLKRST_CORE" => match tt {
             "EFB_0" => {
-                vec![tn, rel_tile_prefix(4, 0, "EFB_2")]
+                vec![tn, rel_tile_prefix(2, 0, "EFB_1_OSC"), rel_tile_prefix(4, 0, "EFB_2"), rel_tile_prefix(6, 0, "I2C_EFB_3")]
             },
             _ => { // default: -17 case
                 vec![tn]
