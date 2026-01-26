@@ -91,12 +91,13 @@ def main():
 
         nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.COARSE_DELAY".format(prim), ["0NS", "0P8NS", "1P6NS"],
             lambda x: get_substs(kv=("COARSE_DELAY", x)), False)
-        nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.COARSE_DELAY_MODE".format(prim), ["DYNAMIC", "STATIC"],
-            lambda x: get_substs(kv=("COARSE_DELAY_MODE", x)), False)
-        nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.EDGE_MONITOR".format(prim), ["ENABLED", "DISABLED"],
-            lambda x: get_substs(kv=("EDGE_MONITOR", x)), False)
-        nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.WAIT_FOR_EDGE".format(prim), ["ENABLED", "DISABLED"],
-            lambda x: get_substs(kv=("WAIT_FOR_EDGE", x)), False)
+        if not s:
+            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.COARSE_DELAY_MODE".format(prim), ["DYNAMIC", "STATIC"],
+                lambda x: get_substs(kv=("COARSE_DELAY_MODE", x)), False)
+            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.EDGE_MONITOR".format(prim), ["ENABLED", "DISABLED"],
+                lambda x: get_substs(kv=("EDGE_MONITOR", x)), False)
+            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.WAIT_FOR_EDGE".format(prim), ["ENABLED", "DISABLED"],
+                lambda x: get_substs(kv=("WAIT_FOR_EDGE", x)), False)
 
         if not s:
             for pin in ["CIBCRS0", "CIBCRS1", "RANKSELECT", "RANKENABLE", "RANK0UPDATE", "RANK1UPDATE"]:
