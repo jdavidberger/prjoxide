@@ -68,8 +68,24 @@ flagged and changed when the tilegrid is imported from lattice's interchange for
 There is a global distribution network on the LIFCL devices for clocks and resets to limit skew to any given logic cell:
 
 - Starts at CMUX 
-- Distributed along HROW's to SPINEs
-- SPINEs push to branch nodes
-- Branch nodes push out left or right into PLCs
+- Branch out left or right -- LHPRX or RHPRX
+- Distributed along HROW's to SPINEs - HPRX1000 -> VPSX1000
+- SPINEs push to branch nodes VPSX1000 -> R..C44_HPBX..00
+- PLCs local to the SPINE can be fed from here. An additional branch jump HPBX0 can reach the rest.
 
 See global.json for a listing of those cells for each device.
+
+### Example routing:
+
+To get from R82C25_JCLKO_DCC_DCC0 -> R4C35_JCLK_SLICED on LIFCL-33
+
+- R37C25_JCLKO_DCC_DCC0 feeds [R37C25_JJCLKUL_CMUX_CORE_CMUX0, R37C25_JJCLKUL_CMUX_CORE_CMUX1]
+- These feed out to [R37C25_JHPRX{LANE}_CMUX_CORE_CMUX0, R37C25_JHPRX{LANE}_CMUX_CORE_CMUX1] respectively
+- These feed out to [R37C25_LHPRX{LANE}, R37C25_RHPRX{LANE}]. LHPRX branches out to C0 to C25. RHPRX branches out from C25 to C50
+- Following R37C25_LHPRX{LANE}, it drives R37C31_HPRX{LANE}00
+- This drives R41C37_VPSX{LANE}00
+- R41C37_VPSX{LANE}00 drives R{ROW}C44_HPBX{INST}00
+- R4C32_HPBX{INST}00 provides local access to tiles R38 to R50. It also provides access to a branch R4C32_HPBX{INST}00 node.
+- R4C32_HPBX{INST}00 provides local access to tiles R25 to R37, namely R4C35_JCLK1
+- R4C35_JCLK1 drives R4C35_JCLK_SLICED
+

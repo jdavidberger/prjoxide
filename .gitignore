@@ -20,3 +20,5 @@ radiantc.log*
 work/
 .\#*
 *.fasm
+.cache
+fuzzers/*/*/db
