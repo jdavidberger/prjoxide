@@ -80,6 +80,7 @@ else
 	# Cache miss
 	cd "$2.tmp"
 	if [ -n "$STRUCT_VER" ]; then
+	  rm -f par.udb
 	"$fpgabindir"/sv2udb -o par.udb input.v
 	else
 	"$fpgabindir"/synthesis -a "$LSE_ARCH" -p "$DEVICE" -t "$PACKAGE" \
@@ -99,15 +100,26 @@ else
 	fi
 
 	if [ -n "$GEN_RBF" ]; then
-		"$fpgabindir"/bitgen $EXTRA_BIT_ARGS -b -d -w par.udb
+		OUTPUT=$("$fpgabindir"/bitgen $EXTRA_BIT_ARGS -b -d -w par.udb 2>&1)
+		if [[ $OUTPUT == *"ERROR <"* ]]; then
+		  echo "Exiting due to error found during bitgen"
+		  exit -1
+		fi
+
 		LD_LIBRARY_PATH=$ld_lib_path_orig $bscache commit $PART "input.v" $MAP_PDC output "par.udb" "par.rbt"
 	else
 		if [ -n "$RBK_MODE" ]; then
-			"$fpgabindir"/bitgen $EXTRA_BIT_ARGS -d -w -m 1 par.udb
+			OUTPUT=$("$fpgabindir"/bitgen $EXTRA_BIT_ARGS -d -w -m 1 par.udb 2>&1)
 			mv par.rbk par.bit
 		else	
-			"$fpgabindir"/bitgen $EXTRA_BIT_ARGS -d -w par.udb
+			OUTPUT=$("$fpgabindir"/bitgen $EXTRA_BIT_ARGS -d -w par.udb 2>&1)
 		fi
+
+			if [[ $OUTPUT == *"ERROR <"* ]]; then
+			   echo "Exiting due to error found during bitgen"
+			   exit -1
+		  fi
+
 		LD_LIBRARY_PATH=$ld_lib_path_orig $bscache commit $PART "input.v" $MAP_PDC output "par.udb" "par.bit"
 	fi
 	export LD_LIBRARY_PATH=""
