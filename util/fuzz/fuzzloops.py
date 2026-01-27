@@ -10,6 +10,7 @@ import signal
 import threading
 import time
 from asyncio import CancelledError
+from os import abort
 from pathlib import Path
 from signal import SIGINT, SIGTERM
 
@@ -42,7 +43,7 @@ def Executor(executor=None):
         if cleanup:
             executor.shutdown(wait=True)
 
-
+error_count = 0
 def parallel_foreach(items, func, jobs = None):
     """
     Run a function over a list of values, running a number of jobs
@@ -77,8 +78,11 @@ def parallel_foreach(items, func, jobs = None):
 
                 func(item)
         except Exception as e:
-            print(f"Error: {e}")
-            traceback.print_exc()
+            global error_count
+            if error_count < 10:
+                error_count = error_count + 1
+                print(f"Error: {e}")
+                traceback.print_exc()
             
             exception = e
             with items_lock:
@@ -146,7 +150,13 @@ def gather_futures(futures, name = None):
 
     return out
 
-def chain(future, func, name = None, *args, **kwargs):
+def chain(future, func, *args, **kwargs):
+    name = None
+    if isinstance(func, str):
+        name = func
+        func = args[0]
+        args = args[1:]
+
     if isinstance(future, list):
         future = gather_futures(future)
 
@@ -156,7 +166,11 @@ def chain(future, func, name = None, *args, **kwargs):
         r = None
         try:
             r = f.result()
-            fut.set_result(func(r, *args, **kwargs))
+            if hasattr(f, 'executor'):
+                new_f = f.executor.submit(func, r, *args, **kwargs)
+                new_f.add_done_callback(fut.set_result)
+            else:
+                fut.set_result(func(r, *args, **kwargs))
         except BaseException as e:
             logging.error(f"Encountered exception while calling {func} with {r} {args} {kwargs}")
             traceback.print_exception(e)
@@ -178,13 +192,14 @@ def chain(future, func, name = None, *args, **kwargs):
     return fut
 
 class AsyncExecutor:
-    def __init__(self):
+    def __init__(self, executor):
         self.futures = []
         self.lock = RLock()
         self.loop = asyncio.get_running_loop()
-
+        self.executor = executor
     def submit(self, f, *args, **kwargs):
         future = self.loop.run_in_executor(None, lambda args=args,kwargs=kwargs: f(*args, **kwargs))
+
         future.name = f.__name__
         self.register_future(future)
         return future
@@ -214,6 +229,9 @@ class AsyncExecutor:
     def task_count(self):
         return len(self.futures)
 
+    def shutdown(self):
+        self.executor.shutdown(wait=True, cancel_futures=True)
+
 def FuzzerAsyncMain(f):
     from fuzzconfig import FuzzConfig
 
@@ -242,16 +260,19 @@ def FuzzerAsyncMain(f):
     async def start(f):
         async_executor = None
 
-        main_task = asyncio.current_task()
         int_count = 0
         def sighandler(sig, frame):
             nonlocal int_count
-            print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! SIG HANDLER !!!!!!!!!!!!!!!!!!!!!!! {int_count}")
-            if int_count > 1:
-                sys.exit(-1)
-
-            main_task.cancel()
             int_count = int_count + 1
+            if int_count > 2:
+                logging.warning("Forcing exit")
+                os._exit(-1)
+
+            for t in asyncio.all_tasks():
+                t.cancel("Signal interrupt")
+
+            if async_executor is not None:
+                async_executor.shutdown()
 
         for sig in [SIGINT, SIGTERM]:
             signal.signal(sig, sighandler)
@@ -291,6 +312,11 @@ def FuzzerAsyncMain(f):
 
                             if fut.done():
                                 if fut.exception() is not None:
+                                    logging.error(f"Encountered exception in future {fut}: {fut.exception()}")
+                                    try:
+                                        raise fut.exception()
+                                    except:
+                                        traceback.print_exc()
                                     all_exceptions.append(fut.exception())
                                 else:
                                     finished_tasks = finished_tasks + 1
@@ -310,26 +336,27 @@ def FuzzerAsyncMain(f):
                 try:
                     asyncio.get_running_loop().set_default_executor(executor)
 
-                    async_executor = AsyncExecutor()
+                    async_executor = AsyncExecutor(executor)
 
                     all_exceptions = []
 
-                    ui_task = asyncio.create_task(ui(async_executor))
                     task = asyncio.create_task(f(async_executor))
+                    ui_task = asyncio.create_task(ui(async_executor))
 
                     await asyncio.gather(task, ui_task)
+
+                    logging.info("UI and main task finished")
+
                 except CancelledError:
+                    logging.warning("Cancelling all executor jobs")
                     executor.shutdown(wait=False, cancel_futures=True)
                     raise
-
 
         except KeyboardInterrupt:
             logging.warning("Keyboard interrupt")
         except CancelledError:
-            if int_count > 1:
-                sys.exit(-1)
-            int_count = int_count + 1
-
+            logging.warning("Cancelled")
+            raise
 
         if len(all_exceptions):
             logging.error(f"Encountered the following {len(all_exceptions)} errors:")

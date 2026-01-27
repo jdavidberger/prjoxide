@@ -1,14 +1,10 @@
 import asyncio
 import logging
 import re
-import shutil
 import sys
-import time
-import traceback
-from collections import defaultdict
-from concurrent.futures import Future
-from multiprocessing.synchronize import RLock
+import lapie
 
+import cachecontrol
 import fuzzconfig
 import fuzzloops
 import interconnect
@@ -17,15 +13,19 @@ import nonrouting
 import primitives
 import radiant
 import tiles
-from cachier import cachier
 from fuzzconfig import FuzzConfig, get_db
 from interconnect import fuzz_interconnect_sinks
 
 import database
-import cachecontrol
+
+###
+# This fuzzer pulls up each site, figures out its relationship to tiletypes, and then find the routeing and primitive
+# mappings for those representative tile(s).
+###
 
 mapped_sites = set()
 
+# These tiles overlap many sites and are not the main site tiles
 overlapping_tile_types = set(["CIB", "MIB_B_TAP", "TAP_CIB"] +
                              [f"BANKREF{i}" for i in range(16)] +
                              [f"BK{i}_15K" for i in range(16)]
@@ -37,32 +37,15 @@ def get_site_tiles(device, site):
 
     return site_tiles
 
-@cachecontrol.cache_fn()
-def find_baseline_differences(device, active_bitstream):
-    baseline = FuzzConfig.standard_empty(device)
-
-    deltas = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, baseline).delta(fuzzconfig.db, active_bitstream)
-
-    ip_values = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, active_bitstream).get_ip_values()
-    ip_values = [(a,v) for a,v in ip_values if v != 0]
-
-    return deltas, ip_values
-
+# Pull from a bitstream baseline delta the main tile and IP changes
 def find_relevant_tiles_from_bitstream(device, site, active_bitstream):
-    deltas, ip_values = find_baseline_differences(device, active_bitstream)
+    deltas, ip_values = fuzzconfig.find_baseline_differences(device, active_bitstream)
 
     power_tile_types = set(["PMU"] + [f"BANKREF{i}" for i in range(16)])
     pmu_tiles = [x for x in list(deltas.keys()) if x.split(":")[-1] in power_tile_types]
 
     delta_sorted = [x[0] for x in sorted(deltas.items(), key=lambda x: -len(x[1]))]
     driving_tiles = [x for x in delta_sorted if x.split(":")[-1] not in power_tile_types]
-
-    # single_driving_type_check = site_type in ["PCLKDIV", "ECLKDIV_CORE", "DIFFIO18_CORE"] or len(driving_tiles) == 1
-    # if not single_driving_type_check:
-    #     raise Exception(f"{site_type} should have single driving tile but it has {driving_tiles}. {deltas}")
-
-    #tile = driving_tiles[0]
-
     site_tiles = [tile for tile in tiles.get_tiles_by_rc(device, site) if
                   tile.split(":")[1] not in overlapping_tile_types]
 
@@ -72,29 +55,7 @@ def find_relevant_tiles_from_bitstream(device, site, active_bitstream):
 
     return (driving_tiles + pmu_tiles), site_tiles, ip_values
 
-#@cachier(separate_files=True, cache_dir='.cachier')
-async def find_relevant_tiles_from_primitive(device, primitive, site, site_info, executor):
-    site_type = site_info["type"]
-
-    cfg = FuzzConfig(job=f"{site}:{site_type}", device=device, tiles=[])
-
-    primitive_bitstream = await asyncio.wrap_future(cfg.build_design_future(executor, "./primitive.v", {
-        "config": primitive.fill_config(),
-        "site": site,
-        "site_type": site_type,
-        "extra": "",
-        "signals": ""
-    }, prefix=f"find-relevant-tiles/{primitive.mode}/"))
-    logging.info(f"Getting relevant tiles for {device} {site}:{site_type} for {primitive.mode}")
-
-    driving_tiles, site_tiles, ip_values = find_relevant_tiles_from_bitstream(device, site, primitive_bitstream)
-
-    pin_driving_tiles, pin_site_tiles, pin_ip_values = await find_relevant_tiles(device, site, site_type, site_info, executor = executor)
-    def uniq(x):
-        return list(dict.fromkeys(x))
-
-    return uniq(driving_tiles + pin_driving_tiles), uniq(site_tiles + pin_site_tiles), uniq(ip_values + pin_ip_values)
-
+# Look at the site pins and map out the nodes on those pins. Find the deltas that enable those pips.
 async def find_relevant_tiles(device, site, site_type, site_info, executor):
     cfg = FuzzConfig(job=f"{site}:{site_type}", device=device, tiles=[])
 
@@ -115,7 +76,36 @@ async def find_relevant_tiles(device, site, site_type, site_info, executor):
             ip_values
             )
 
+# If we have a primitive definition, use it to generate a bitstream and compare it to baseline. This delta shows which
+# tiles the site belongs to.
+async def find_relevant_tiles_from_primitive(device, primitive, site, site_info, executor):
+    site_type = site_info["type"]
+
+    cfg = FuzzConfig(job=f"{site}:{site_type}", device=device, tiles=[])
+
+    primitive_bitstream = await asyncio.wrap_future(cfg.build_design_future(executor, "./primitive.v", {
+        "config": primitive.fill_config(),
+        "site": site,
+        "site_type": site_type,
+        "extra": "",
+        "signals": ""
+    }, prefix=f"find-relevant-tiles/{primitive.mode}/"))
+    logging.info(f"Getting relevant tiles for {device} {site}:{site_type} for {primitive.mode}")
+
+    driving_tiles, site_tiles, ip_values = find_relevant_tiles_from_bitstream(device, site, primitive_bitstream)
+
+    # Also get the tiling from just the wiring
+    pin_driving_tiles, pin_site_tiles, pin_ip_values = await find_relevant_tiles(device, site, site_type, site_info, executor = executor)
+
+    # Note: We do this to keep ordering but removing dups
+    def uniq(x):
+        return list(dict.fromkeys(x))
+
+    return uniq(driving_tiles + pin_driving_tiles), uniq(site_tiles + pin_site_tiles), uniq(ip_values + pin_ip_values)
+
 mux_re = re.compile("MUX[0-9]*$")
+
+# Take all a given sites local graph and pips, and solve for all of it
 def map_local_pips(site, site_type, device, ts, pips, local_graph, executor=None):
     cfg = FuzzConfig(job=f"{site}:{site_type}", sv="../shared/route.v", device=device, tiles=ts)
 
@@ -143,6 +133,7 @@ def map_local_pips(site, site_type, device, ts, pips, local_graph, executor=None
         mux_cfg = FuzzConfig(job=f"{site}:{site_type}-MUX", sv="../shared/route.v", device=device, tiles=cfg.tiles)
         yield from fuzz_interconnect_sinks(mux_cfg, mux_pips, True, executor = executor)
 
+# Use the primitive definitions to map out each mode's options. Works for IP and non IP settings
 def map_primitive_settings(device, ts, site, site_tiles, site_type, ip_values, executor = None):
     if site_type not in primitives.primitives:
         return []
@@ -309,15 +300,9 @@ async def run_for_device(device, executor = None):
     sites = database.get_sites(device)
     sites_items = [(k,v) for k,v in sorted(sites.items()) if v["type"] not in ["CIBTEST", "SLICE"]]
 
-    import lapie
     sitetypes = {v["type"] for s,v in sites_items}
 
-    # repr_sites = {v["type"]:(k,v) for (k,v) in sites_items}
-    # sites_items = sorted([v for k,v in repr_sites.items()])
-
-    #await asyncio.gather(*[executor.submit(lapie.get_node_data, device, sitetype, True) for sitetype in sitetypes])
     await asyncio.wrap_future(lapie.get_node_data(device, sitetypes, True, executor))
-    logging.info("-----------------------------------------")
 
     driving_tiles_futures = []
     async with asyncio.TaskGroup() as tg:

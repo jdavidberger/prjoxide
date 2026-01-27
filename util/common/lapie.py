@@ -261,7 +261,7 @@ def _get_list_arc(device):
         return arcs
 
 @cache
-def get_list_arc(device):
+def get_jump_wires(device):
     from nodes_database import NodesDatabase
     node_db = NodesDatabase.get(device)
     jmp = set(node_db.get_jumpwires())
@@ -270,6 +270,13 @@ def get_list_arc(device):
         node_db.insert_jumpwires(jmp)
 
     return jmp
+
+def get_jump_wires_by_nodes(device, nodes):
+    return set([
+        (frm_wire, to_wire)
+        for (frm_wire, to_wire) in get_jump_wires(device)
+        if frm_wire in nodes or to_wire in nodes
+    ])
 
 def _get_node_data(udb, nodes):
     regex = False

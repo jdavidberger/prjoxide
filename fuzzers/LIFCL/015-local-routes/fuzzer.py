@@ -19,6 +19,15 @@ from interconnect import fuzz_interconnect_sinks
 
 import database
 
+###
+# The idea for this fuzzer is that we can map out the internal pips and connections for a given tiletype in relatively
+# short order without knowing much about them by using the introspection from the radiant tools. The basic process is:
+# - Generate a list of wires and pips a given tile type has
+# - Figure out which tiles configure these pips
+# - Use all the tiles of that tiletype on the board to test. So if there are 16 tiles with that tiletype, we can solve
+#   for 16 PIP configurations at a time.
+###
+
 processed_tiletypes = set("PLC")
 
 exclusion_list = {
@@ -27,7 +36,7 @@ exclusion_list = {
     ("SYSIO_B3_0", "JECLKIN1_I218", "JECLKOUT_I218")
 }
 
-# Cache this so we only do it once. Could also probably read the ron file and check it
+# Cache this so we only do it once. Could also probably read the ron file and check it.
 @cachecontrol.cache_fn()
 def register_tile_connections(device, tiletype, tile, conn_pips):
     connection_sinks = defaultdict(list)
@@ -41,52 +50,52 @@ def register_tile_connections(device, tiletype, tile, conn_pips):
             db.add_conn(family, tiletype, to_wire, from_wire)
     db.flush()
 
-async def get_tiletype_pips(device, tiletype, executor = None):
+### Gather up all the consistent internal pips for a tiletype, then use however many tiles of that tiletype exist
+### to create design sets for each PIP. This also tracks and manages tiles that configure the tiletype but are positioned
+### relative to it and have different tiles types
+async def get_tiletype_design_sets(device, tiletype, executor = None):
+
+    # representative nodes is all wires that are common to all instances of that tiletype for the device
     wires = tiles.get_representative_nodes_for_tiletype(device, tiletype)
 
     if len(wires) == 0:
         logging.debug(f"{tiletype} has no consistent internal wires")
         return tiletype, [], []
 
-    arcs = lapie.get_list_arc(device)
-
     ts = sorted(list(tiles.get_tiles_by_tiletype(device, tiletype).keys()))
+
+    # Treat this as an exemplar node to gather the pips from
     (r, c) = tiles.get_rc_from_name(device, ts[0])
     nodes = set([f"R{r}C{c}_{w}" for w in wires])
-
-    internal_and_external_pips, tiletype_graph = await asyncio.wrap_future(tiles.get_local_pips_for_nodes(device, nodes, include_interface_pips=True,
+    pips, tiletype_graph = await asyncio.wrap_future(tiles.get_local_pips_for_nodes(device, nodes, include_interface_pips=False,
                                                                                              should_expand=lambda p: p[0] in nodes and p[1] in nodes,
                                                                                              executor = executor))
-    pips = {p for p in internal_and_external_pips if p[0] in tiletype_graph and p[1] in tiletype_graph}
 
-    connected_arcs = set([
-        (frm_wire, to_wire)
-        for (frm_wire, to_wire) in arcs
-        if frm_wire in nodes
-    ])
+    # Jump wires are what lattice tools refer to as connections -- basically PIPs that are always on
+    connected_arcs = lapie.get_jump_wires_by_nodes(device, nodes)
 
+    # Remove the jump wires -- no point in including them in our designs, we already know they are connections
     conn_pips = set(pips) & connected_arcs
     actual_pips = set(pips) - conn_pips
     pips = sorted(actual_pips)
 
+    # While we have the list, we might as well mark down that they are connections
     register_tile_connections(device, tiletype, ts[0], sorted(conn_pips))
 
     anon_pips = sorted(set([tuple(["_".join(w.split("_")[1:]) for w in p]) for p in pips]))
 
     baseline = FuzzConfig.standard_empty(device)
     cfg = FuzzConfig(job=f"find-tile-set-{device}-{tiletype}", device=device)
-    baseline_pips = []
-    baseline_nodes = set()
-    for p in pips:
-        if not p[0] in baseline_nodes and not p[1] in baseline_nodes:
-            for w in p:
-                baseline_nodes.add(w)
-            baseline_pips.append(p)
 
     bitstream = await asyncio.wrap_future(interconnect.create_wires_file(cfg, pips, executor=executor))
-    deltas = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, baseline).delta(fuzzconfig.db, bitstream)
+
+    deltas, _  =fuzzconfig.find_baseline_differences(device, bitstream)
+
+    # PLC is used to affix the wires, strip those from the delta
     filtered_deltas = {k:v for k,v in deltas.items() if k.split(":")[1] != "PLC"}
 
+    # PIPs are often controlled by nearby tiles. Convert those to relative positioned tiles. Since sometimes two tiles
+    # will share an RC, we grab the tiletype too.
     modified_tiles_rcs = set([(tiles.get_rc_from_name(device, n),n.split(":")[-1]) for n in filtered_deltas.keys()])
     modified_tiles_rcs_anon = [((r0-r),(c0-c),tt) for ((r0,c0),tt) in modified_tiles_rcs]
 
@@ -110,24 +119,28 @@ async def get_tiletype_pips(device, tiletype, executor = None):
         return tiletype, [], []
 
     design_sets = []
-    rcs = sorted([(tile,tiles.get_rc_from_name(device, tile)) for tile in ts])
+    rcs_for_tiles_of_tiletype = sorted([(tile,tiles.get_rc_from_name(device, tile)) for tile in ts])
 
-    extra_rcs = set([((r+rd), (c+cd), tt)
-                 for (_, (r,c)) in rcs
-                 for (rd,cd,tt) in modified_tiles_rcs_anon])
+    extra_rcs = [((r+rd), (c+cd), tt)
+                 for (_, (r,c)) in rcs_for_tiles_of_tiletype
+                 for (rd,cd,tt) in modified_tiles_rcs_anon]
 
+    # Make sure there isn't overlap between modified tiles for all the tiles of the type.
+    assert(len(extra_rcs) == len(set(extra_rcs)))
+    extra_rcs = set(extra_rcs)
+
+    # Generate design sets by continuously iterating through tile locations and putting a random PIP there.
     while len(anon_pips):
         design_set = {}
+
+        # Just place all the extra tiles. We dont have pips for these tiles but this marks it as used.
         for rc in extra_rcs:
             for tile in tiles.get_tiles_by_rc(device, rc):
                 design_set[tile] = None
-        for (tile, (r,c)) in rcs:
+        for (tile, (r,c)) in rcs_for_tiles_of_tiletype:
             pip = anon_pips.pop()
             pip = [f"R{r}C{c}_{w}" for w in pip]
             design_set[tile] = pip
-            #
-            # design_sets.append(design_set)
-            # design_set = {}
 
             if len(anon_pips) == 0:
                 break
@@ -137,24 +150,8 @@ async def get_tiletype_pips(device, tiletype, executor = None):
 
     return tiletype, design_sets, modified_tiles_rcs_anon
 
-def diff_designs(bitstream, baseline):
-    deltas = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, baseline).delta(fuzzconfig.db, bitstream)
-    deltas = {k:v for (k,v) in deltas.items() if k.split(":")[1] != "PLC"}
-    return deltas
-
-async def run_for_device(device, executor = None):
-    if not fuzzconfig.should_fuzz_platform(device):
-        logging.warning(f"Ignoring device {device}")
-        return []
-
-    logging.info("Fuzzing device: " + device)
-
-    lapie.get_list_arc(device)
-
+def get_filtered_typetypes(device):
     tiletypes = tiles.get_tiletypes(device)
-
-    device_futures = []
-
     for tiletype, ts in sorted(tiletypes.items()):
 
         if tiletype in ["PLC", "TAP_PLC"]:
@@ -166,11 +163,22 @@ async def run_for_device(device, executor = None):
         if tiletype in processed_tiletypes:
             continue
         processed_tiletypes.add(tiletype)
+        yield tiletype
 
-        device_futures.append(get_tiletype_pips(device, tiletype, executor=executor))
+async def run_for_device(device, executor = None):
+    if not fuzzconfig.should_fuzz_platform(device):
+        logging.warning(f"Ignoring device {device}")
+        return []
+
+    logging.info("Fuzzing device: " + device)
+
+    device_futures = [
+        get_tiletype_design_sets(device, tiletype, executor=executor)
+        for tiletype in get_filtered_typetypes(device)
+    ]
 
     # list of list of dicts
-    logging.info(f"Gathering {len(device_futures)} tiletypes")
+    logging.info(f"Gathering {len(device_futures)} tile type pips")
     all_design_sets = await asyncio.gather(*device_futures)
 
     owned_rcs = {tt:e for (tt,d,e) in all_design_sets}
@@ -199,18 +207,12 @@ async def run_for_device(device, executor = None):
     for idx, (owners, design_set) in enumerate(design_sets):
         pips = [pip for tile, pip in design_set.items() if pip is not None]
         create_bitstream_future = interconnect.create_wires_file(cfg, pips, executor=executor, prefix=f"{idx}/")
-        diff_designs_futures.append(fuzzloops.chain(create_bitstream_future, diff_designs, "solve_design", empty_file))
+        diff_designs_futures.append(fuzzloops.chain(create_bitstream_future, "solve_design", lambda x,device=device: fuzzconfig.find_baseline_differences(device, x)[0]))
 
     all_design_diffs = await asyncio.gather(*[asyncio.wrap_future(f) for f in diff_designs_futures])
 
     def anon_pip(p):
         return ["_".join(w.split("_")[1:]) for w in p]
-
-    # for (i, (deltas, (owners, design_set))) in enumerate(zip(all_design_diffs, design_sets)):
-    #     with open(f"delta_raw{i}.json", "w") as f:
-    #         json.dump(deltas, f, indent=4)
-    #     with open(f"design{i}.json", "w") as f:
-    #         json.dump(design_set, f, indent=4)
 
     pip_deltas = defaultdict(list)
     for (deltas, (owners, design_set)) in zip(all_design_diffs, design_sets):
@@ -296,8 +298,6 @@ async def run_for_devices(executor):
         return []
 
     return await asyncio.gather(*[run_for_device(device, executor) for device in devices])
-
-
 
 if __name__ == "__main__":
     fuzzloops.FuzzerAsyncMain(run_for_devices)

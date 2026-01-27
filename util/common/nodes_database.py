@@ -18,7 +18,7 @@ class NodesDatabase:
         import database
 
         self.db_path = f"{database.get_cache_dir()}/{device}-nodes.sqlite"
-        logging.info(f"Opening node database at {self.db_path}")
+        logging.debug(f"Opening node database at {self.db_path}")
 
         self.device = device
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)

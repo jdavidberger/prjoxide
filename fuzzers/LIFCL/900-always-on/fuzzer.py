@@ -12,6 +12,7 @@ cfgs = [
 ]
 
 def main():
+    db = fuzzconfig.get_db()
 	for cfg in cfgs:
 	    cfg.setup()
 	    empty = cfg.build_design(cfg.sv, {})

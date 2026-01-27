@@ -460,12 +460,11 @@ def get_outlier_nodes_for_tiletype(device, tiletype):
 
 @cachecontrol.cache_fn()
 def get_connections_for_device(device):
-    arcs = lapie.get_list_arc(device)
+    arcs = lapie.get_jump_wires(device)
 
-    connections = {}
-
-    for arc_node, arc_node_info in arcs.items():
-        connections[arc_node] = set([p.to_wire for p in arc_node_info.downhill_pips])
+    connections = defaultdict(set)
+    for frm, to in arcs:
+        connections[frm].add(to)
 
     return connections
 

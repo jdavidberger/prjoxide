@@ -5,20 +5,26 @@ import gzip
 import logging
 import os
 import threading
+from concurrent.futures import Future
 from os import path
 from pathlib import Path
 from string import Template
 import radiant
 import database
 import libpyprjoxide
+import cachecontrol
 
-db = None
+#db = None
 
 def get_db():
-    global db
-    if db is None:
-        db = libpyprjoxide.Database(database.get_db_root())
-    return db
+    #global db
+    l = threading.local()
+    if "fuzz_db" in l.__dict__:
+        return l.__dict__["fuzz_db"]
+    l.__dict__["fuzz_db"] = libpyprjoxide.Database(database.get_db_root())
+    #if db is None:
+    #    db = l.__dict__["fuzz_db"]
+    return l.__dict__["fuzz_db"]
 
 PLATFORM_FILTER = os.environ.get("FUZZER_PLATFORM", None)
 
@@ -31,6 +37,16 @@ def should_fuzz_platform(device):
         return False
     return True
 
+@cachecontrol.cache_fn()
+def find_baseline_differences(device, active_bitstream):
+    baseline = FuzzConfig.standard_empty(device)
+    db = get_db()
+    deltas = libpyprjoxide.Chip.from_bitstream(db, baseline).delta(db, active_bitstream)
+
+    ip_values = libpyprjoxide.Chip.from_bitstream(db, active_bitstream).get_ip_values()
+    ip_values = [(a, v) for a, v in ip_values if v != 0]
+
+    return deltas, ip_values
 
 class FuzzConfig:
     _standard_empty_bitfile = {}
@@ -96,7 +112,7 @@ class FuzzConfig:
 
     def solve(self, fz):
         try:
-            fz.solve(db)
+            fz.solve(get_db())
             self.serialize_deltas(fz, fz.get_name())
         except:
             self.serialize_deltas(fz, f"{fz.get_name()}/FAILED")
@@ -108,9 +124,6 @@ class FuzzConfig:
         """
 
         # Load the global database if it doesn't exist already
-        global db
-        if db is None:
-            db = libpyprjoxide.Database(database.get_db_root())
 
         self.make_workdir()
         if not skip_specimen:
@@ -135,9 +148,10 @@ class FuzzConfig:
     def build_design_future(self, executor, *args, **kwargs):
         future = executor.submit(self.build_design, *args, **kwargs)
         future.name = f"Build {self.device}"
+        future.executor = executor
         return future
 
-    def build_design(self, des_template, substitutions = {}, prefix="", substitute=True):
+    def build_design(self, des_template, substitutions = {}, prefix="", substitute=True, executor = None):
         """
         Run Radiant on a given design template, applying a map of substitutions, plus some standard substitutions
         if not overriden.
@@ -201,23 +215,34 @@ class FuzzConfig:
                         outf.write(gzf.read())
 
         if foundFile is not None:
+            if executor is not None:
+                f = Future()
+                f.set_result(foundFile)
+                return f
             return foundFile
 
-        FuzzConfig.radiant_builds = FuzzConfig.radiant_builds + 1
-        process_results = radiant.run(self.device, desfile, struct_ver=self.struct_mode, raw_bit=False, rbk_mode=self.rbk_mode)
+        def run_radiant_sh():
+            FuzzConfig.radiant_builds = FuzzConfig.radiant_builds + 1
+            process_results = radiant.run(self.device, desfile, struct_ver=self.struct_mode, raw_bit=False, rbk_mode=self.rbk_mode)
 
-        error_output = process_results.stderr.decode().strip()
-        if "ERROR <" in error_output:
-            raise Exception(f"Error found during bitstream build: {error_output}")
+            error_output = process_results.stderr.decode().strip()
+            if "ERROR <" in error_output:
+                raise Exception(f"Error found during bitstream build: {error_output}")
 
-        if self.struct_mode and self.udb_specimen is None:
-            self.udb_specimen = path.join(self.workdir, prefix + "design.tmp", "par.udb")
-        if path.exists(bitfile):
-            return bitfile
-        if path.exists(bitfile_gz):
-            return bitfile_gz
+            if self.struct_mode and self.udb_specimen is None:
+                self.udb_specimen = path.join(self.workdir, prefix + "design.tmp", "par.udb")
+            if path.exists(bitfile):
+                return bitfile
+            if path.exists(bitfile_gz):
+                return bitfile_gz
 
-        raise Exception(f"Could not generate bitstream file {bitfile} {bitfile_gz}")
+            raise Exception(f"Could not generate bitstream file {bitfile} {bitfile_gz}")
+
+        if executor is None:
+            return run_radiant_sh()
+
+        return executor.submit(run_radiant_sh)
+
 
     @property
     def udb(self):
