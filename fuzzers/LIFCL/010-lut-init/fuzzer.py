@@ -3,7 +3,7 @@ import nonrouting
 import fuzzloops
 import re
 
-cfg = FuzzConfig(job="PLCINIT", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["R2C2:PLC"])
+cfg = FuzzConfig(job="PLCINIT", device="LIFCL-40", tiles=["R2C2:PLC"])
 
 def get_lut_function(init_bits):
     sop_terms = []

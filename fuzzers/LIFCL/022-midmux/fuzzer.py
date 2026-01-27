@@ -17,6 +17,10 @@ configs = [
         FuzzConfig(job="RMIDROUTE", device="LIFCL-17", sv="../shared/route_17.v", tiles=["CIB_R10C75:RMID_PICB_DLY10"])),
     ("VPFS", (0, 37), 16, "T",
         FuzzConfig(job="TMIDROUTE", device="LIFCL-17", sv="../shared/route_17.v", tiles=["CIB_R0C37:TMID_0", "CIB_R0C38:TMID_1_15K", "CIB_R0C39:CLKBUF_T_15K"])),
+
+    ("VPFN", (83, 25), 16, "B",
+     FuzzConfig(job="BMIDROUTE-33U", device="LIFCL-33U", sv="../shared/route.v",
+                tiles=["CIB_R83C25:BMID_0_ECLK_1", "CIB_R83C26:BMID_1_ECLK_2"])),
 ]
 
 def main():
@@ -24,8 +28,10 @@ def main():
         cfg.setup()
         if cfg.device == "LIFCL-40":
             cr, cc = (28, 49)
-        else:
+        elif cfg.device == "LIFCL-17":
             cr, cc = (10, 37)
+        else:
+            cr, cc = (37, 25)
         r, c = rc
         nodes = []
         mux_nodes = []

@@ -1,315 +1,303 @@
+import asyncio
 import logging
-import shutil
+import re
 import sys
-import time
-import traceback
 from collections import defaultdict
-from concurrent.futures import Future
 
+import cachecontrol
 import fuzzconfig
 import fuzzloops
 import interconnect
+import lapie
 import libpyprjoxide
 import nonrouting
 import primitives
 import radiant
 import tiles
-from cachier import cachier
 from fuzzconfig import FuzzConfig, get_db
 from interconnect import fuzz_interconnect_sinks
 
 import database
 
-tiletypes = set()
+processed_tiletypes = set("PLC")
 
-overlapping_tile_types = set(["CIB", "MIB_B_TAP"] +
-                             [f"BANKREF{i}" for i in range(16)] +
-                             [f"BK{i}_15K" for i in range(16)]
-                             )
+exclusion_list = {
+    # I think this particular pip needs other things in SYSIO_B3 to trigger, but when SYSIO_B3_1 is
+    # driving SYSIO_B3_0_ECLK_L, the pip seems active. Just blacklist this one and accept the bit flip.
+    ("SYSIO_B3_0", "JECLKIN1_I218", "JECLKOUT_I218")
+}
 
-def get_site_tiles(device, site):
-    site_tiles = [tile for tile in tiles.get_tiles_by_rc(device, site) if
-                  tile.split(":")[1] not in overlapping_tile_types]
+# Cache this so we only do it once. Could also probably read the ron file and check it
+@cachecontrol.cache_fn()
+def register_tile_connections(device, tiletype, tile, conn_pips):
+    connection_sinks = defaultdict(list)
+    for (frm, to) in conn_pips:
+        connection_sinks[to].append(frm)
 
-    return site_tiles
+    db = libpyprjoxide.Database(database.get_db_root())
+    family = device.split("-")[0]
+    for (to_wire, froms) in connection_sinks.items():
+        for from_wire in froms:
+            db.add_conn(family, tiletype, to_wire, from_wire)
+    db.flush()
 
-def site_differences(device, bitfile, baseline = None):
-    if baseline is None:
-        baseline = FuzzConfig.standard_empty(device)
+async def get_tiletype_pips(device, tiletype, executor = None):
+    wires = tiles.get_representative_nodes_for_tiletype(device, tiletype)
 
-    deltas = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, baseline).delta(fuzzconfig.db, bitfile)
+    if len(wires) == 0:
+        logging.debug(f"{tiletype} has no consistent internal wires")
+        return tiletype, [], []
 
-    ip_values = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, bitfile).get_ip_values()
-    ip_values = [(a,v) for a,v in ip_values if v != 0]
+    arcs = lapie.get_list_arc(device)
 
-    power_tile_types = set(["PMU"] + [f"BANKREF{i}" for i in range(16)])
-    pmu_tiles = [x for x in list(deltas.keys()) if x.split(":")[-1] in power_tile_types]
-    driving_tiles = [x for x in list(deltas.keys()) if x.split(":")[-1] not in power_tile_types]
+    ts = sorted(list(tiles.get_tiles_by_tiletype(device, tiletype).keys()))
+    (r, c) = tiles.get_rc_from_name(device, ts[0])
+    nodes = set([f"R{r}C{c}_{w}" for w in wires])
 
-    tile = driving_tiles[0]
+    internal_and_external_pips, tiletype_graph = await asyncio.wrap_future(tiles.get_local_pips_for_nodes(device, nodes, include_interface_pips=True,
+                                                                                             should_expand=lambda p: p[0] in nodes and p[1] in nodes,
+                                                                                             executor = executor))
+    pips = {p for p in internal_and_external_pips if p[0] in tiletype_graph and p[1] in tiletype_graph}
 
-    return (driving_tiles + pmu_tiles), ip_values
+    connected_arcs = set([
+        (frm_wire, to_wire)
+        for (frm_wire, to_wire) in arcs
+        if frm_wire in nodes
+    ])
 
+    conn_pips = set(pips) & connected_arcs
+    actual_pips = set(pips) - conn_pips
+    pips = sorted(actual_pips)
 
-@cachier(separate_files=True, cache_dir='.cachier')
-def find_relevant_tiles(device, primitive_config, site, site_type):
-    cfg = FuzzConfig(job=f"{site}", device=device, tiles=[])
+    register_tile_connections(device, tiletype, ts[0], sorted(conn_pips))
 
-    empty_file = FuzzConfig.standard_empty(device)
+    anon_pips = sorted(set([tuple(["_".join(w.split("_")[1:]) for w in p]) for p in pips]))
 
-    primitive_type = cfg.build_design("./primitive.v", {
-        "config": primitive_config,
-        "site": site,
-        "site_type": site_type,
-        "extra": "",
-        "signals": ""
-    }, prefix=site + "/")
+    baseline = FuzzConfig.standard_empty(device)
+    cfg = FuzzConfig(job=f"find-tile-set-{device}-{tiletype}", device=device)
+    baseline_pips = []
+    baseline_nodes = set()
+    for p in pips:
+        if not p[0] in baseline_nodes and not p[1] in baseline_nodes:
+            for w in p:
+                baseline_nodes.add(w)
+            baseline_pips.append(p)
 
-    deltas = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, empty_file).delta(fuzzconfig.db, primitive_type)
+    bitstream = await asyncio.wrap_future(interconnect.create_wires_file(cfg, pips, executor=executor))
+    deltas = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, baseline).delta(fuzzconfig.db, bitstream)
+    filtered_deltas = {k:v for k,v in deltas.items() if k.split(":")[1] != "PLC"}
 
-    ip_values = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, primitive_type).get_ip_values()
-    ip_values = [(a,v) for a,v in ip_values if v != 0]
+    modified_tiles_rcs = set([(tiles.get_rc_from_name(device, n),n.split(":")[-1]) for n in filtered_deltas.keys()])
+    modified_tiles_rcs_anon = [((r0-r),(c0-c),tt) for ((r0,c0),tt) in modified_tiles_rcs]
 
-    power_tile_types = set(["PMU"] + [f"BANKREF{i}" for i in range(16)])
-    pmu_tiles = [x for x in list(deltas.keys()) if x.split(":")[-1] in power_tile_types]
+    logging.info(f"{tiletype} has {len(anon_pips)} PIPs for {len(ts)} tiles {len(conn_pips)} connections and {len(nodes)} nodes with {modified_tiles_rcs_anon} modified tiles")
 
-    delta_sorted = [x[0] for x in sorted(deltas.items(), key=lambda x: -len(x[1]))]
-    driving_tiles = [x for x in delta_sorted if x.split(":")[-1] not in power_tile_types]
-    print(delta_sorted)
+    logging.debug(f"{tiletype} Connections:")
+    for c in conn_pips:
+        logging.debug(f"    - {c}")
 
-    # single_driving_type_check = site_type in ["PCLKDIV", "ECLKDIV_CORE", "DIFFIO18_CORE"] or len(driving_tiles) == 1
-    # if not single_driving_type_check:
-    #     raise Exception(f"{site_type} should have single driving tile but it has {driving_tiles}. {deltas}")
+    logging.debug(f"{tiletype} pips:")
+    for c in anon_pips:
+        logging.debug(f"    - {c}")
 
-    tile = driving_tiles[0]
+    # Either there are no pips or a primitive enables them
+    if len(modified_tiles_rcs_anon) == 0:
+        return tiletype, [], []
 
-    site_tiles = [tile for tile in tiles.get_tiles_by_rc(device, site) if
-                  tile.split(":")[1] not in overlapping_tile_types]
+    # TAP_PLC's are weird and need to be mapped separately.
+    if "TAP_PLC" in [tt for (_,_,tt) in modified_tiles_rcs_anon]:
+        logging.warning(f"Ignoring {tiletype}; {modified_tiles_rcs_anon}")
+        return tiletype, [], []
 
-    # This happens for DCC, DCS
-    if len(site_tiles) == 0:
-        site_tiles = driving_tiles
+    design_sets = []
+    rcs = sorted([(tile,tiles.get_rc_from_name(device, tile)) for tile in ts])
 
-    return (driving_tiles + pmu_tiles), site_tiles, ip_values
+    extra_rcs = set([((r+rd), (c+cd), tt)
+                 for (_, (r,c)) in rcs
+                 for (rd,cd,tt) in modified_tiles_rcs_anon])
 
-def map_local_pips(name, device, ts, pips, local_graph, executor = None):
-    cfg = FuzzConfig(job=name, sv="../shared/route.v", device=device, tiles=ts)
+    while len(anon_pips):
+        design_set = {}
+        for rc in extra_rcs:
+            for tile in tiles.get_tiles_by_rc(device, rc):
+                design_set[tile] = None
+        for (tile, (r,c)) in rcs:
+            pip = anon_pips.pop()
+            pip = [f"R{r}C{c}_{w}" for w in pip]
+            design_set[tile] = pip
+            #
+            # design_sets.append(design_set)
+            # design_set = {}
 
-    external_nodes = [wire for pip in pips for wire in pip if wire not in local_graph]
+            if len(anon_pips) == 0:
+                break
 
-    # CIB is routed separately
-    cfg.tiles.extend(
-        [tile for n in external_nodes for tile in tiles.get_tiles_by_rc(device, n) if tile.split(":")[-1] != "CIB"])
+        if len(design_set):
+            design_sets.append(design_set)
 
-    return fuzz_interconnect_sinks(cfg, pips, False, executor = executor)
+    return tiletype, design_sets, modified_tiles_rcs_anon
 
-def map_primitive_settings(device, ts, site, site_tiles, site_type, ip_values, executor = None):
-    if site_type not in primitives.primitives:
+def diff_designs(bitstream, baseline):
+    deltas = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, baseline).delta(fuzzconfig.db, bitstream)
+    deltas = {k:v for (k,v) in deltas.items() if k.split(":")[1] != "PLC"}
+    return deltas
+
+async def run_for_device(device, executor = None):
+    if not fuzzconfig.should_fuzz_platform(device):
+        logging.warning(f"Ignoring device {device}")
         return []
 
-    empty_file = FuzzConfig.standard_empty(device)
+    logging.info("Fuzzing device: " + device)
 
-    base_addrs = database.get_base_addrs(device)
+    lapie.get_list_arc(device)
 
-    if site not in base_addrs:
-        ip_values = []
-
-    is_ip_config = len(ip_values) > 0
-    if len(ip_values):
-        fuzz_enum_setting = nonrouting.fuzz_ip_enum_setting
-        fuzz_word_setting = nonrouting.fuzz_ip_word_setting
-    else:
-        fuzz_enum_setting = nonrouting.fuzz_enum_setting
-        fuzz_word_setting = nonrouting.fuzz_word_setting
-
-    def map_mode(mode):
-        logging.info(f"====== {mode.mode} : {site_type} IP: {len(ip_values)} ==========")
-        related_tiles = (ts + site_tiles)
-        cfg = FuzzConfig(job=f"config/{site}/{mode.mode}", device=device, sv="primitive.v", tiles= related_tiles if len(ip_values) == 0 else [f"{site}:{site_type}"])
-
-        slice_sites = tiles.get_tiles_by_tiletype(device, "PLC")
-        slice_iter = iter([x for x in slice_sites if tiles.get_rc_from_name(device, x) not in related_tiles])
-
-        extra_lines = []
-        signals = []
-
-        avail_in_pins = []
-        for p in mode.pins:
-            if p.dir == "in" or p.dir == "inout":
-                for r in range(0, p.bits if p.bits is not None else 1):
-                    suffix = str(r) if p.bits != None else ""
-                    avail_in_pins.append(f"{p.name}{suffix}")
-        q_driver = None
-        def get_sink_pin():
-            if len(avail_in_pins):
-                in_pin = avail_in_pins.pop()
-                extra_lines.append(f"wire q_{in_pin};")
-                signals.append(f".{in_pin}(q_{in_pin})")
-                return f"q_{in_pin}"
-
-            idx = len(extra_lines)
-            extra_lines.append(f"""
-            wire q_{idx};            
-            (* \\dm:cellmodel_primitives ="REG0=reg", \\dm:primitive ="SLICE", \\dm:programming ="MODE:LOGIC Q0:Q0 ", \\dm:site ="{next(slice_iter).split(":")[0]}A" *) 
-            SLICE SLICE_I_{idx} ( .A0(q_{idx}) );
-                        """)
-            return f"q_{idx}"
-
-        for p in mode.pins:
-            for r in range(0, p.bits if p.bits is not None else 1):
-                suffix = str(r) if p.bits != None else ""
-                if p.dir == "out":
-                    q = get_sink_pin()
-                    q_driver = q
-                    signals.append(f".{p.name}{suffix}({q})")
-
-        if len(avail_in_pins) and q_driver is None:
-            extra_lines.append(f"""
-                    wire q_driver;            
-                    (* \\dm:cellmodel_primitives ="REG0=reg", \\dm:primitive ="SLICE", \\dm:programming ="MODE:LOGIC Q0:Q0 ", \\dm:site ="{next(slice_iter).split(":")[0]}A" *) 
-                    SLICE SLICE_I_driver ( .A0(q_driver), .Q0(q_driver) );
-                """)
-            q_driver = "q_driver"
-
-        for undriven_pin in avail_in_pins:
-            signals.append(f".{undriven_pin}({q_driver})")
-
-        subs = {
-            "site": site,
-            "site_type": site_type,
-            "extra": "\n".join(extra_lines),
-            "signals": ", ".join(signals)
-        }
-
-        def map_mode_setting(setting):
-            mark_relative_to = None
-            if site_tiles[0] != ts[0]:
-                mark_relative_to = site_tiles[0]
-
-            args = {
-                "config": cfg,
-                "name": f"{mode.mode}.{setting.name}",
-                "desc": setting.desc,
-                "executor": executor
-            }
-
-            if isinstance(setting, primitives.EnumSetting):
-                def subs_fn(val):
-                    return subs | {"config": mode.configuration([(setting, val)])}
-
-                if len(ip_values) == 0:
-                    args["mark_relative_to"] = mark_relative_to
-
-                if isinstance(setting, primitives.ProgrammablePin) and not is_ip_config:
-                    args["include_zeros"] = True
-
-                return fuzz_enum_setting(empty_bitfile = empty_file, values = setting.values, get_sv_substs = subs_fn, **args)
-            elif isinstance(setting, primitives.WordSetting):
-                def subs_fn(val):
-                    return subs | {"config": mode.configuration([(setting, nonrouting.fuzz_intval(val))])}
-
-                return fuzz_word_setting(length=setting.bits, get_sv_substs=subs_fn, **args)
-            else:
-                raise Exception(f"Unknown setting type: {setting}")
-
-        return [map_mode_setting(s) for s in mode.settings]
-
-    return [f for mode in primitives.primitives[site_type] for f in map_mode(mode)]
-
-def run_for_device(device, executor = None):
-    if not fuzzconfig.should_fuzz_platform(device):
-        return
-
-    sites = database.get_sites(device)
-
-    def find_relevant_tiles_for_site(site, site_info):
-        site_type = site_info["type"]
-
-        primitive = primitives.primitives[site_type][0]
-
-        return find_relevant_tiles(device, primitive.fill_config(), site, site_type)
-
-    def find_relevant_tiles_for_site_without_primitive(site, site_info):
-
-        pips, local_graph = tiles.get_local_pips_for_site(device, site)
-        cfg = FuzzConfig(job=f"{site}", device=device, tiles=[])
-
-        all_wires_bit = interconnect.create_wires_file(cfg, pips, prefix = site)
-
-        (driving_tiles, ip_delta) = site_differences(device, all_wires_bit)
-        site_tiles = get_site_tiles(device, site)
-
-        return (driving_tiles, site_tiles, ip_delta)
-
-    def per_site(site, site_info, relevant_tile_info):
-        site_type = site_info["type"]
-
-        (driving_tiles, site_tiles, ip_values) = relevant_tile_info
-
-        tiletype = driving_tiles[0].split(":")[1]
-        if tiletype in tiletypes:
-            return []
-
-        tiletypes.add(tiletype)
-
-        logging.info(f"====== {site} : {tiletype} ==========")
-        pips, local_graph = tiles.get_local_pips_for_site(device, site)
-        pips_future = map_local_pips(site, device, driving_tiles + site_tiles, pips, local_graph, executor=executor)
-
-        # Map primitive parameter settings
-        settings_future = map_primitive_settings(device, driving_tiles + site_tiles, site, site_tiles, site_type, ip_values, executor = executor)
-
-        return [pips_future, settings_future]
+    tiletypes = tiles.get_tiletypes(device)
 
     device_futures = []
-    for site, site_info in sorted(sites.items()):
-        site_type = site_info["type"]
 
-        if len(sys.argv) > 1 and sys.argv[1] != site_type:
+    for tiletype, ts in sorted(tiletypes.items()):
+
+        if tiletype in ["PLC", "TAP_PLC"]:
             continue
 
-        if site_type in ["PLL_CORE"] and device in ["LIFCL-33U"]:
-            logging.warning(f"Can't map out IP core f{site_type} with device {device} which is in readback mode")
+        if len(sys.argv) > 1 and re.compile(sys.argv[1]).search(tiletype) is None:
             continue
 
-        f = None
-        if site_type not in primitives.primitives:
+        if tiletype in processed_tiletypes:
             continue
-            f = executor.submit(find_relevant_tiles_for_site_without_primitive, site, site_info)
+        processed_tiletypes.add(tiletype)
 
-        else:
-            f = executor.submit(find_relevant_tiles_for_site, site, site_info)
+        device_futures.append(get_tiletype_pips(device, tiletype, executor=executor))
 
-        f.name = "Find tiles"
-        site_future = fuzzloops.chain(f, lambda fut, site=site, site_info=site_info: per_site(site, site_info, fut), "Map site")
+    # list of list of dicts
+    logging.info(f"Gathering {len(device_futures)} tiletypes")
+    all_design_sets = await asyncio.gather(*device_futures)
 
-        device_futures.extend([f, site_future])
+    owned_rcs = {tt:e for (tt,d,e) in all_design_sets}
 
-    return device_futures
+    design_sets = []
+    while True:
+        design_set = {}
+        owners = defaultdict(list)
+        for (tiletype, designs, extra_rcs) in all_design_sets:
+            if len(designs) and len(designs[-1].keys() & design_set.keys()) == 0:
+                owners[tiletype].extend(designs[-1].keys())
+                design_set.update(designs.pop())
 
-def main():
+                # The original idea here was that the tile types could be combined. However, this
+                # does seem to trigger some bit changes
+                break
+        if len(design_set) == 0:
+            break
+        design_sets.append((owners, design_set))
+
+    logging.info(f"Building {len(design_sets)} designs")
+    cfg = FuzzConfig(job="all-routing", device=device, tiles=[])
+
+    diff_designs_futures = []
+    empty_file = FuzzConfig.standard_empty(device)
+    for idx, (owners, design_set) in enumerate(design_sets):
+        pips = [pip for tile, pip in design_set.items() if pip is not None]
+        create_bitstream_future = interconnect.create_wires_file(cfg, pips, executor=executor, prefix=f"{idx}/")
+        diff_designs_futures.append(fuzzloops.chain(create_bitstream_future, diff_designs, "solve_design", empty_file))
+
+    all_design_diffs = await asyncio.gather(*[asyncio.wrap_future(f) for f in diff_designs_futures])
+
+    def anon_pip(p):
+        return ["_".join(w.split("_")[1:]) for w in p]
+
+    # for (i, (deltas, (owners, design_set))) in enumerate(zip(all_design_diffs, design_sets)):
+    #     with open(f"delta_raw{i}.json", "w") as f:
+    #         json.dump(deltas, f, indent=4)
+    #     with open(f"design{i}.json", "w") as f:
+    #         json.dump(design_set, f, indent=4)
+
+    pip_deltas = defaultdict(list)
+    for (deltas, (owners, design_set)) in zip(all_design_diffs, design_sets):
+        rc_deltas = {(*tiles.get_rc_from_name(device, k), k.split(":")[-1]):v for k,v in deltas.items()}
+
+        owned_by = {}
+        for k,ts in owners.items():
+            for tile in ts:
+                owned_by[tile] = k
+        for tile, pip in design_set.items():
+            tiletype = tile.split(":")[1]
+            if pip is not None:
+                rc = tiles.get_rc_from_name(device, pip[0])
+                tile_owned_rcs = set([
+                    (orc[0]+rc[0], orc[1]+rc[1], orc[2])
+                    for orc in owned_rcs[tiletype]
+                ])
+
+                owned_tiles_for_tiletype = {
+                    k:rc_deltas.get(k, [])
+                    for k in tile_owned_rcs
+                }
+
+                rc_tiles_for_tiletype = {(r-rc[0], c-rc[1], tiletype):d for (r,c,tiletype),d in owned_tiles_for_tiletype.items()}
+
+                apip = anon_pip(pip)
+                pip_deltas[tiletype].append((apip, rc_tiles_for_tiletype))
+
+    for tiletype, pips_with_deltas in pip_deltas.items():
+        sinks = defaultdict(list)
+        for (pip, deltas) in pips_with_deltas:
+            sinks[pip[1]].append((pip[0], deltas))
+
+        all_ts = sorted(list(tiles.get_tiles_by_tiletype(device, tiletype).keys()))
+        tile = all_ts[0]
+        ts = [tile]
+
+        logging.debug(f"Solving for {len(sinks)} sinks on {tiletype}; ref tile {tile}")
+        for to_wire, full_deltas in sinks.items():
+
+            rc = tiles.get_rc_from_name(device, tile)
+            rc_prefix = f"R{rc[0]}C{rc[1]}_"
+            tile_lookup = {}
+            for from_wire, deltas in full_deltas:
+                for (r1, c1, tiletype), d in deltas.items():
+                    for t in tiles.get_tiles_by_rc(device, (r1+rc[0],c1+rc[1])):
+                        if t.split(":")[-1] == tiletype:
+                            tile_lookup[(r1,c1,tiletype)] = t
+                            ts.append(t)
+
+            cfg = FuzzConfig(job=f"{tiletype}/{to_wire}", device=device, tiles=ts)
+            fz = libpyprjoxide.Fuzzer.pip_fuzzer(fuzzconfig.db, empty_file, set(ts), rc_prefix + to_wire, tile,
+                                             set(), "MUX" in to_wire, False)
+            for from_wire, deltas in full_deltas:
+                if (tiletype, from_wire, to_wire) in exclusion_list:
+                    continue
+
+                concrete_deltas = {tile_lookup[k]: v for k, v in deltas.items() if len(v)}
+                logging.debug(f"{tiletype} {from_wire} -> {to_wire} has {len(concrete_deltas)} delta tiles")
+                fz.add_pip_sample_delta(rc_prefix + from_wire, concrete_deltas)
+            cfg.solve(fz)
+
+    return []
+
+async def run_for_devices(executor):
     get_db()
-
     families = database.get_devices()["families"]
     devices = sorted([
         device
         for family in families
         for device in families[family]["devices"]
+        if fuzzconfig.should_fuzz_platform(device)
     ])
 
-    all_sites = set([site_info["type"]
-                 for device in devices
-                 for site,site_info in database.get_sites(device).items()
-                 ])
+    all_tiletypes = sorted(set([tile.split(":")[-1]
+                                for device in devices
+                                for tile in database.get_tilegrid(device)["tiles"]
+                                ]))
 
-    if len(sys.argv) > 1 and sys.argv[1] not in all_sites:
-        logging.warning(f"Site filter doesn't match any known sites")
-        print(sorted(all_sites))
+    if len(sys.argv) > 1 and not any(map(lambda tt: re.compile(sys.argv[1]).search(tt), all_tiletypes)):
+        logging.warning(f"Tiletype filter doesn't match any known tiles")
+        logging.warning(sorted(all_tiletypes))
+        return []
 
-        return
+    return await asyncio.gather(*[run_for_device(device, executor) for device in devices])
 
-    fuzzloops.FuzzerMain(lambda executor: [ run_for_device(device, executor) for device in devices ])
+
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    main()
+    fuzzloops.FuzzerAsyncMain(run_for_devices)

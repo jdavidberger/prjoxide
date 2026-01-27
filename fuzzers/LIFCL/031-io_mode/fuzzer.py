@@ -23,93 +23,101 @@ def create_config_from_pad(pad, device):
     pio = pad["pio"]
     ts = [t for t in tiles.get_tiles_from_edge(device, pad["side"], pad["offset"]) if "SYSIO" in t]
     all_sysio = [t for t in tiles.get_tiles_from_edge(device, pad["side"]) if "SYSIO" in t]
+    if len(ts) == 0:
+        logging.warning(f"Could not find tile for {pad} for {device}")
+        return
+
     tiletype = ts[0].split(":")[1]
-    print(ts, tiletype, pad)
+
     return (
         f"{tiletype}-{pio}",
         (pio_names[pad["pio"]], pin,
-         FuzzConfig(job=f"IO{pin}_{device}_{tiletype}", device=device, sv="../shared/empty_33.v",
+         FuzzConfig(job=f"IO{pin}_{device}_{tiletype}", device=device,
                     tiles=ts + all_sysio))
     )
 
-pads33 = [x for x in database.get_iodb("LIFCL-33")["pads"]]
-configs_33 = dict([
-    create_config_from_pad(x, "LIFCL-33") for x in pads33 if x["offset"] >= 0
-])
 
-configs = list(configs_33.values()) + [
-    ("B", "E11", # PR3B,
-        FuzzConfig(job="IO1D_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R3C75:SYSIO_B1_DED_15K"])),
-    ("A","F16", # PR13A
-        FuzzConfig(job="IO1A_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R13C75:SYSIO_B1_0_15K", "CIB_R14C75:SYSIO_B1_1_15K"])),
-    ("B","G15", # PR13B
-        FuzzConfig(job="IO1B_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R13C75:SYSIO_B1_0_15K", "CIB_R14C75:SYSIO_B1_1_15K"])),
-    ("A","E15", # PT67A
-        FuzzConfig(job="IO0A_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R0C67:SYSIO_B0_0_15K"])),
-    ("B","E16", # PT67B
-        FuzzConfig(job="IO0B_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R0C67:SYSIO_B0_0_15K"])),
+def create_device_configs(device):
+    pads = [x for x in database.get_iodb(device)["pads"]]
+    configs = dict(filter(None, [
+        create_config_from_pad(x, device) for x in pads if x["offset"] >= 0
+    ]))
+    return list(configs.values())
 
-    ("A","F16", # PR8A
-        FuzzConfig(job="IO1AO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R8C87:SYSIO_B1_0_ODD"])),
-    ("B","F17", # PR8B
-        FuzzConfig(job="IO1BO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R8C87:SYSIO_B1_0_ODD"])),
-    ("A","F14", # PR6A
-        FuzzConfig(job="IO1AE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R6C87:SYSIO_B1_0_EVEN"])),
-    ("B","F15", # PR6B
-        FuzzConfig(job="IO1BE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R6C87:SYSIO_B1_0_EVEN"])),
-    ("A","F18", # PR10A
-        FuzzConfig(job="IC1A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R10C87:SYSIO_B1_0_C", "CIB_R11C87:SYSIO_B1_0_REM"])),
-    ("B","F19", # PR10B
-        FuzzConfig(job="IC1B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R10C87:SYSIO_B1_0_C", "CIB_R11C87:SYSIO_B1_0_REM"])),
-    ("A","N14", # PR24A
-        FuzzConfig(job="IO2AE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R24C87:SYSIO_B2_0_EVEN"])),
-    ("B","M14", # PR24B
-        FuzzConfig(job="IO2BE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R24C87:SYSIO_B2_0_EVEN"])),
-    ("A","M17", # PR30A
-        FuzzConfig(job="IO2AO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R30C87:SYSIO_B2_0_ODD"])),
-    ("B","M18", # PR30B
-        FuzzConfig(job="IO2BO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R30C87:SYSIO_B2_0_ODD"])),
-    ("A","T18", # PR46A
-        FuzzConfig(job="IC2A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R46C87:SYSIO_B2_0_C", "CIB_R47C87:SYSIO_B2_0_REM"])),
-    ("B","U18", # PR46B
-        FuzzConfig(job="IC2B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R46C87:SYSIO_B2_0_C", "CIB_R47C87:SYSIO_B2_0_REM"])),
-    ("A","R3", # PL49A
-        FuzzConfig(job="IO6AO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R49C0:SYSIO_B6_0_ODD"])),
-    ("B","R4", # PL49B
-        FuzzConfig(job="IO6BO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R49C0:SYSIO_B6_0_ODD"])),
-    ("A","L1", # PL27A
-        FuzzConfig(job="IO6AE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R27C0:SYSIO_B6_0_EVEN"])),
-    ("B","L2", # PL27B
-        FuzzConfig(job="IO6BE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R27C0:SYSIO_B6_0_EVEN"])),
-    ("A","P5", # PL46A
-        FuzzConfig(job="IC6A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R46C0:SYSIO_B6_0_C", "CIB_R47C0:SYSIO_B6_0_REM"])),
-    ("B","P6", # PL46B
-        FuzzConfig(job="IC6B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R46C0:SYSIO_B6_0_C", "CIB_R47C0:SYSIO_B6_0_REM"])),
-    ("A","E2", # PL15A
-        FuzzConfig(job="IO7A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R15C0:SYSIO_B7_0_ODD"])),
-    ("B","F1", # PL15B
-        FuzzConfig(job="IO7B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R15C0:SYSIO_B7_0_ODD"])),
-    ("A","D6", # PL6A
-        FuzzConfig(job="IO7AE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R6C0:SYSIO_B7_0_EVEN"])),
-    ("B","D5", # PL6B
-        FuzzConfig(job="IO7BE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R6C0:SYSIO_B7_0_EVEN"])),
-    ("A","K2", # PL19A
-        FuzzConfig(job="IC7A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R19C0:SYSIO_B7_0_C", "CIB_R20C0:SYSIO_B7_0_REM"])),
-    ("B","K1", # PL19B
-        FuzzConfig(job="IC7B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R19C0:SYSIO_B7_0_C", "CIB_R20C0:SYSIO_B7_0_REM"])),
-    ("A","E18", # PT84A
-        FuzzConfig(job="IO0A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C84:SYSIO_B0_0_ODD"])),
-    ("B","D17", # PT84B
-        FuzzConfig(job="IO0B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C84:SYSIO_B0_0_ODD"])),
-    ("A","E13", # PT78A
-        FuzzConfig(job="IO0AE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C78:SYSIO_B0_0_EVEN"])),
-    ("B","D13", # PT78B
-        FuzzConfig(job="IO0BE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C78:SYSIO_B0_0_EVEN"])),
-    ("B","E17", # PR3A
-        FuzzConfig(job="IO1D", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R3C87:SYSIO_B1_DED"])),
-]
+configs = create_device_configs("LIFCL-33") + create_device_configs("LIFCL-33U") + create_device_configs("LIFCL-17") + create_device_configs("LIFCL-40")
+#           [
+#     ("B", "E11", # PR3B,
+#         FuzzConfig(job="IO1D_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R3C75:SYSIO_B1_DED_15K"])),
+#     ("A","F16", # PR13A
+#         FuzzConfig(job="IO1A_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R13C75:SYSIO_B1_0_15K", "CIB_R14C75:SYSIO_B1_1_15K"])),
+#     ("B","G15", # PR13B
+#         FuzzConfig(job="IO1B_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R13C75:SYSIO_B1_0_15K", "CIB_R14C75:SYSIO_B1_1_15K"])),
+#     ("A","E15", # PT67A
+#         FuzzConfig(job="IO0A_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R0C67:SYSIO_B0_0_15K"])),
+#     ("B","E16", # PT67B
+#         FuzzConfig(job="IO0B_17K", device="LIFCL-17", sv="../shared/empty_17.v", tiles=["CIB_R0C67:SYSIO_B0_0_15K"])),
+#
+#     ("A","F16", # PR8A
+#         FuzzConfig(job="IO1AO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R8C87:SYSIO_B1_0_ODD"])),
+#     ("B","F17", # PR8B
+#         FuzzConfig(job="IO1BO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R8C87:SYSIO_B1_0_ODD"])),
+#     ("A","F14", # PR6A
+#         FuzzConfig(job="IO1AE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R6C87:SYSIO_B1_0_EVEN"])),
+#     ("B","F15", # PR6B
+#         FuzzConfig(job="IO1BE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R6C87:SYSIO_B1_0_EVEN"])),
+#     ("A","F18", # PR10A
+#         FuzzConfig(job="IC1A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R10C87:SYSIO_B1_0_C", "CIB_R11C87:SYSIO_B1_0_REM"])),
+#     ("B","F19", # PR10B
+#         FuzzConfig(job="IC1B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R10C87:SYSIO_B1_0_C", "CIB_R11C87:SYSIO_B1_0_REM"])),
+#     ("A","N14", # PR24A
+#         FuzzConfig(job="IO2AE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R24C87:SYSIO_B2_0_EVEN"])),
+#     ("B","M14", # PR24B
+#         FuzzConfig(job="IO2BE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R24C87:SYSIO_B2_0_EVEN"])),
+#     ("A","M17", # PR30A
+#         FuzzConfig(job="IO2AO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R30C87:SYSIO_B2_0_ODD"])),
+#     ("B","M18", # PR30B
+#         FuzzConfig(job="IO2BO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R30C87:SYSIO_B2_0_ODD"])),
+#     ("A","T18", # PR46A
+#         FuzzConfig(job="IC2A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R46C87:SYSIO_B2_0_C", "CIB_R47C87:SYSIO_B2_0_REM"])),
+#     ("B","U18", # PR46B
+#         FuzzConfig(job="IC2B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R46C87:SYSIO_B2_0_C", "CIB_R47C87:SYSIO_B2_0_REM"])),
+#     ("A","R3", # PL49A
+#         FuzzConfig(job="IO6AO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R49C0:SYSIO_B6_0_ODD"])),
+#     ("B","R4", # PL49B
+#         FuzzConfig(job="IO6BO", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R49C0:SYSIO_B6_0_ODD"])),
+#     ("A","L1", # PL27A
+#         FuzzConfig(job="IO6AE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R27C0:SYSIO_B6_0_EVEN"])),
+#     ("B","L2", # PL27B
+#         FuzzConfig(job="IO6BE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R27C0:SYSIO_B6_0_EVEN"])),
+#     ("A","P5", # PL46A
+#         FuzzConfig(job="IC6A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R46C0:SYSIO_B6_0_C", "CIB_R47C0:SYSIO_B6_0_REM"])),
+#     ("B","P6", # PL46B
+#         FuzzConfig(job="IC6B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R46C0:SYSIO_B6_0_C", "CIB_R47C0:SYSIO_B6_0_REM"])),
+#     ("A","E2", # PL15A
+#         FuzzConfig(job="IO7A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R15C0:SYSIO_B7_0_ODD"])),
+#     ("B","F1", # PL15B
+#         FuzzConfig(job="IO7B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R15C0:SYSIO_B7_0_ODD"])),
+#     ("A","D6", # PL6A
+#         FuzzConfig(job="IO7AE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R6C0:SYSIO_B7_0_EVEN"])),
+#     ("B","D5", # PL6B
+#         FuzzConfig(job="IO7BE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R6C0:SYSIO_B7_0_EVEN"])),
+#     ("A","K2", # PL19A
+#         FuzzConfig(job="IC7A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R19C0:SYSIO_B7_0_C", "CIB_R20C0:SYSIO_B7_0_REM"])),
+#     ("B","K1", # PL19B
+#         FuzzConfig(job="IC7B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R19C0:SYSIO_B7_0_C", "CIB_R20C0:SYSIO_B7_0_REM"])),
+#     ("A","E18", # PT84A
+#         FuzzConfig(job="IO0A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C84:SYSIO_B0_0_ODD"])),
+#     ("B","D17", # PT84B
+#         FuzzConfig(job="IO0B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C84:SYSIO_B0_0_ODD"])),
+#     ("A","E13", # PT78A
+#         FuzzConfig(job="IO0AE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C78:SYSIO_B0_0_EVEN"])),
+#     ("B","D13", # PT78B
+#         FuzzConfig(job="IO0BE", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C78:SYSIO_B0_0_EVEN"])),
+#     ("B","E17", # PR3A
+#         FuzzConfig(job="IO1D", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R3C87:SYSIO_B1_DED"])),
+# ]
 
-def main():
+def main(executor):
     def per_config(config):
         pio, site, cfg = config
         cfg.setup()
@@ -124,7 +132,7 @@ def main():
         (r,c) = tiles.get_rc_from_name(cfg.device, cfg.tiles[0])
 
         if f"R{r}C{c}_JPADDO_SEIO33_CORE_IO{pio}" not in tiles.get_full_node_set(cfg.device):
-            print(f"Skipping {site} {cfg.tiles}; no SEIO33 tile")
+            logging.info(f"Skipping {site} {cfg.tiles[:3]}; no SEIO33 tile")
             return
 
         primtype = "SEIO33_CORE"
@@ -179,9 +187,8 @@ def main():
             "OUTPUT_LVCMOS33D"
         ]
 
-        coroutines = []
         def fuzz_enum_setting(*args, **kwargs):
-            nonrouting.fuzz_enum_setting(cfg, empty, *args, **kwargs)
+            nonrouting.fuzz_enum_setting(cfg, empty, executor = executor, *args, **kwargs)
 
         fuzz_enum_setting(f"PIO{pio}.BASE_TYPE", seio_types,
                                      lambda x: get_substs(iotype=x), False, assume_zero_base=True, mark_relative_to = cfg.tiles[0])
@@ -251,8 +258,6 @@ def main():
         fuzz_enum_setting("PIO{}.TMUX".format(pio), ["T", "INV"],
                         lambda x: get_substs(iotype=f"BIDIR_LVCMOS18{suffix}", tmux=x), False)
 
-        return coroutines
-
     def cfg_filter(config):
         pio, site, cfg = config
         if not should_fuzz_platform(cfg.device):
@@ -266,8 +271,9 @@ def main():
 
         return True
 
-    fuzzloops.parallel_foreach(filter(cfg_filter, configs), per_config)
+    for config in filter(cfg_filter, configs):
+        per_config(config)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    main()
+    fuzzloops.FuzzerMain(main)
+

@@ -11,7 +11,8 @@ for dir in LIFCL/* ; do
     if [ -f "$dir/fuzzer.py" ]; then
         echo "=================== Entering $dir ==================="
         pushd $dir
-        python3 fuzzer.py 2>&1 | tee >(gzip --stdout > fuzzer.log.gz)
+        ../../../link-db-root.sh
+        PRJOXIDE_DB=`pwd`/db python3 fuzzer.py 2>&1 | tee >(gzip --stdout > fuzzer.log.gz)
         popd
     fi
 done

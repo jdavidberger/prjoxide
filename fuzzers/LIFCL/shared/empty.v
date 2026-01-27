@@ -2,12 +2,7 @@
 module top (
     
 );
-    ${extra};
-
-    (* \dm:primitive ="${site_type}", \dm:programming ="${config}", \dm:site ="${site}" *)
-    ${site_type} inst ( ${signals} );
-
     // A primitive is needed, but VHI should be harmless
-    (* \xref:LOG ="q_c@0@9" *)
-    VHI vhi_i();
+	(* \xref:LOG ="q_c@0@9" *)
+	VHI vhi_i();
 endmodule

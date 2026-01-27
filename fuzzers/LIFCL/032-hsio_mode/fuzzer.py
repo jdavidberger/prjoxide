@@ -1,3 +1,5 @@
+import logging
+
 from fuzzconfig import FuzzConfig, should_fuzz_platform
 import nonrouting
 import fuzzloops
@@ -12,6 +14,11 @@ pio_names = ["A", "B"]
 def create_config_from_pad(pad, device):
     pin = pad["pins"][0]
     ts = [t for t in tiles.get_tiles_from_edge(device, pad["side"], pad["offset"]) if "SYSIO" in t]
+
+    if len(ts) == 0:
+        logging.warning(f"Could not find tile for {pad} for {device}")
+        return
+
     all_sysio = [t for t in tiles.get_tiles_from_edge(device, pad["side"]) if "SYSIO" in t]
     tiletype = ts[0].split(":")[1]
 
@@ -35,12 +42,12 @@ def create_config_from_pad(pad, device):
 
 def create_configs_for_device(device):
     pads = [x for x in database.get_iodb(device)["pads"]]
-    configs = dict([
+    configs = dict(filter(None, [
         create_config_from_pad(x, device) for x in pads if x["offset"] >= 0
-    ])
+    ]))
     return configs
 
-configs = (create_configs_for_device("LIFCL-33") | create_configs_for_device("LIFCL-40")).values()
+configs = (create_configs_for_device("LIFCL-33") | create_configs_for_device("LIFCL-40") ).values()
 # + [
 #     ("A","V1", # PB6A
 #         FuzzConfig(job="IO5A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R56C6:SYSIO_B5_0", "CIB_R56C7:SYSIO_B5_1"])),
@@ -89,7 +96,7 @@ diffio_types = [
 
 device_empty_bitfile = {}
 
-def main():
+def main(executor):
     def per_config(config):
         pio, site, cfg = config
 
@@ -97,7 +104,7 @@ def main():
 
         if f"R{r}C{c}_JPADDO_SEIO18_CORE_IO{pio}" not in tiles.get_full_node_set(cfg.device) and \
            f"R{r}C{c}_JPADDO_DIFFIO18_CORE_IO{pio}" not in tiles.get_full_node_set(cfg.device):
-            print(f"Skipping {site}")
+            print(f"Skipping {site}; it's an SEIO33 site")
             return
         
         cfg.setup()
@@ -160,11 +167,8 @@ def main():
             else:
                 all_di_types += ["{}_{}".format(di, t) for di in d]
 
-        coroutines = []
         def fuzz_enum_setting(*args, **kwargs):
-            coroutines.append(
-                nonrouting.fuzz_enum_setting(cfg, empty, *args, **kwargs)
-            )
+            nonrouting.fuzz_enum_setting(cfg, empty, executor=executor,*args, **kwargs)
 
         fuzz_enum_setting("PIO{}.SEIO18.DRIVE_1V0".format(pio), ["2", "4"],
                                      lambda x: get_substs(iotype="OUTPUT_LVCMOS10H", kv=("DRIVE", x)), True)
@@ -237,8 +241,6 @@ def main():
             fuzz_enum_setting("PIO{}.DIFFIO18.DIFFTX_INV".format(pio), ["NORMAL", "INVERT"],
                             lambda x: get_substs(iotype="OUTPUT_LVDS", kv=("DIFFTX_INV", x)), False)
 
-        return coroutines
-
     def cfg_filter(config):
         pio, site, cfg = config
         if not should_fuzz_platform(cfg.device):
@@ -252,7 +254,8 @@ def main():
         
         return True
 
-    fuzzloops.parallel_foreach(filter(cfg_filter, configs), per_config)
+    for config in filter(cfg_filter, configs):
+        per_config(config)
 
 if __name__ == "__main__":
-    main()
+    fuzzloops.FuzzerMain(main)

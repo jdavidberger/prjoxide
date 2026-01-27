@@ -62,4 +62,4 @@ def main():
     fuzzloops.parallel_foreach(configs, per_config)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

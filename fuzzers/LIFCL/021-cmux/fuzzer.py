@@ -15,7 +15,7 @@ def fuzz_33():
     (r,c) = (37, 25)
     tile_prefix = f"R{r}C{c}"
     
-    nodes = [f"{tile_prefix}_J.*CMUX.*", f"{tile_prefix}_J.*DCSIP", f"{tile_prefix}_J.*PCLKDIV.*"]
+    nodes = [f"{tile_prefix}_J.*MUX.*", f"{tile_prefix}_J.*DCSIP", f"{tile_prefix}_J.*PCLKDIV.*"]
 
     fuzz_interconnect(config=cfg, nodenames=nodes, regex=True, bidir=False, full_mux_style=False)
 
