@@ -205,6 +205,8 @@ impl InterchangeExport {
 }
 
 fn main() -> Result<()> {
+    env_logger::init();
+
     let opts: Opts = Opts::parse();
     match opts.subcmd {
         SubCommand::Pack(t) => {

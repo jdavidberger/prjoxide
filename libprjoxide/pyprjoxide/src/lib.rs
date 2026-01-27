@@ -4,7 +4,7 @@ use pyo3::wrap_pyfunction;
 
 use std::fs::File;
 use std::io::*;
-
+use pyo3_log::{Caching, Logger};
 use prjoxide::bitstream;
 use prjoxide::chip;
 use prjoxide::database;
@@ -30,6 +30,13 @@ impl Database {
         Database {
             db: database::Database::new(root),
         }
+    }
+    pub fn add_conn(&mut self, family: &str, tiletype: &str, from: &str, to: &str) {
+        self.db.tile_bitdb(family, tiletype).add_conn(from, to);
+    }
+
+    pub fn flush(&mut self) {
+        self.db.flush();
     }
 }
 
@@ -141,6 +148,10 @@ impl Fuzzer {
         self.fz.add_pip_sample(&mut db.db, from_wire, base_bitfile);
     }
 
+    fn add_pip_sample_delta(&mut self, from_wire: &str, delta: chip::ChipDelta) {
+        self.fz.add_pip_sample_delta(from_wire, delta);
+    }
+
     fn add_pip_sample_with_partial_delta(&mut self, db: &mut Database, from_wire: &str, base_bitfile: &str) {
         self.fz.add_pip_sample_with_partial_delta(&mut db.db, from_wire, base_bitfile);
     }
@@ -165,6 +176,7 @@ impl Fuzzer {
 #[pyclass]
 struct IPFuzzer {
     fz: ipfuzz::IPFuzzer,
+    name: String
 }
 
 #[pymethods]
@@ -193,6 +205,7 @@ impl IPFuzzer {
                 width,
                 inverted_mode,
             ),
+            name: name.to_string()
         }
     }
 
@@ -215,6 +228,7 @@ impl IPFuzzer {
                 name,
                 desc,
             ),
+            name: name.to_string()
         }
     }
 
@@ -236,6 +250,10 @@ impl IPFuzzer {
 
     fn serialize_deltas(&mut self, filename: &str) {
         self.fz.serialize_deltas(filename);
+    }
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }
 
@@ -374,9 +392,9 @@ fn classify_pip(src_x: i32, src_y: i32, src_name: &str, dst_x: i32, dst_y: i32, 
 }
 
 #[pymodule]
-fn libpyprjoxide(_py: Python, m: &PyModule) -> PyResult<()> {
-    env_logger::init();
-
+fn libpyprjoxide(py: Python, m: &PyModule) -> PyResult<()> {
+    pyo3_log::init();
+    
     m.add_wrapped(wrap_pyfunction!(parse_bitstream))?;
     m.add_wrapped(wrap_pyfunction!(write_tilegrid_html))?;
     m.add_wrapped(wrap_pyfunction!(write_region_html))?;

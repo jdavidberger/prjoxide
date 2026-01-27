@@ -6,7 +6,7 @@ use std::{env, fmt};
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
-use log::info;
+use log::{debug, info, warn};
 // Deserialization of 'devices.json'
 
 macro_rules! emit_bit_change_error {
@@ -15,7 +15,7 @@ macro_rules! emit_bit_change_error {
     ($($arg:tt)*) => {
         /* compiler built-in */
         if env::var("PRJOXIDE_ALLOW_BIT_CHANGE").is_ok() {
-            println!($($arg)*);
+            warn!($($arg)*);
         } else {
             panic!($($arg)*);
         }
@@ -301,8 +301,11 @@ pub struct TileBitsDatabase {
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub always_on: BTreeSet<ConfigBit>,
     #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bel_relative_location : Option<(i32, i32)>
+
+    // Tiletype and relative offset for the tiles that this tiletype configures -- that is, changes in
+    // this tiles bits reflect a change in either pips or primitives in the other tile.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub tile_configures_external_tiles : BTreeSet<(String, i32, i32)>,
 }
 
 impl TileBitsDatabase {
@@ -344,6 +347,34 @@ impl TileBitsData {
         }
     }
 
+    pub fn merge(&mut self, other_db: TileBitsDatabase) {
+        for (to, pip_data) in other_db.pips.iter() {
+            for from in pip_data.iter() {
+                self.add_pip(&from.from_wire, to, from.bits.clone());
+            }
+        }
+        for (word, word_config) in other_db.words.iter() {
+            self.add_word(word, &*word_config.desc, word_config.bits.clone());
+        };
+        for (enm, enum_config) in other_db.enums.iter() {
+            for (option, option_bits) in enum_config.options.iter() {
+                self.add_enum_option(enm, option, &*enum_config.desc, option_bits.clone());
+            }
+        }
+
+        for (to, from_wires) in other_db.conns {
+            for from in from_wires {
+                self.add_conn(&*from.from_wire, &*to);
+                if from.bidir {
+                    self.add_conn(&*to, &*from.from_wire);
+                }
+            }
+        }
+
+        for external_tile_configs in other_db.tile_configures_external_tiles {
+            self.set_bel_offset(Some(external_tile_configs));
+        }
+    }
 
     pub fn add_pip(&mut self, from: &str, to: &str, bits: BTreeSet<ConfigBit>) {
         if !self.db.pips.contains_key(to) {
@@ -351,21 +382,25 @@ impl TileBitsData {
             self.db.pips.insert(to.to_string(), Vec::new());
         }
         let ac = self.db.pips.get_mut(to).unwrap();
-        for ad in ac.iter() {
+        for ad in ac.iter_mut() {
             if ad.from_wire == from {
                 if bits != ad.bits {
                     emit_bit_change_error!(
-                        "Bit conflict for {}.{}<-{} existing: {:?} new: {:?}",
+                        "Bit conflict for {}. {}<-{} existing: {:?} new: {:?}",
                         self.tiletype, from, to, ad.bits, bits
                     );
+
+                    ad.bits = bits;
+                    self.dirty = true;
+                    return;
                 }
 
-                info!("Pip {from} -> {to} already exists for {}", self.tiletype);
+                debug!("Pip {from} -> {to} already exists for {}", self.tiletype);
                 return;
             }
         }
         self.dirty = true;
-        info!("Inserting new pip {from} -> {to}");
+        info!("Inserting new pip {from} -> {to} for {}", self.tiletype);
         ac.push(ConfigPipData {
             from_wire: from.to_string(),
             bits: bits.clone(),
@@ -408,15 +443,19 @@ impl TileBitsData {
         }
     }
 
-    pub fn set_bel_offset(&mut self, bel_relative_location : Option<(i32, i32)>) {
-        if self.db.bel_relative_location.is_some() && self.db.bel_relative_location != bel_relative_location {
+    pub fn set_bel_offset(&mut self, bel_relative_location : Option<(String, i32, i32)>) {
+        if !self.db.tile_configures_external_tiles.is_empty() &&
+            self.db.tile_configures_external_tiles.iter().next() != bel_relative_location.as_ref() {
             emit_bit_change_error!(
                 "Bel offset conflict for {}. existing: {:?} new: {:?}",
-                self.tiletype, self.db.bel_relative_location, bel_relative_location
+                self.tiletype, self.db.tile_configures_external_tiles, bel_relative_location
             );
         }
         info!("Setting bel offset {} {:?}", self.tiletype, bel_relative_location);
-        self.db.bel_relative_location = bel_relative_location;
+
+        bel_relative_location.iter().for_each(
+            |loc| { self.db.tile_configures_external_tiles.insert(loc.clone()); }
+        );
         self.dirty = true;
     }
     pub fn add_enum_option(
@@ -440,13 +479,16 @@ impl TileBitsData {
             ec.desc = desc.to_string();
             self.dirty = true;
         }
-        match ec.options.get(option) {
+        match ec.options.get_mut(option) {
             Some(old_bits) => {
                 if bits != *old_bits {
                     emit_bit_change_error!(
                         "Bit conflict for {}.{}={} existing: {:?} new: {:?}",
                         self.tiletype, name, option, old_bits, bits
                     );
+
+                    ec.options.insert(option.to_string(), bits);
+                    self.dirty = true;
                 }
             }
             None => {
@@ -462,9 +504,9 @@ impl TileBitsData {
         let pc = self.db.conns.get_mut(to).unwrap();
         if pc.iter().any(|fc| fc.from_wire == from) {
             // Connection already exists
-            info!("Connection {from} already exists {}", self.tiletype);
+            debug!("Connection {from} -> {to} already exists {}", self.tiletype);
         } else {
-            info!("Connection {from} added {}", self.tiletype);
+            info!("Connection {from} -> {to} added {}", self.tiletype);
             self.dirty = true;
             pc.push(FixedConnectionData {
                 from_wire: from.to_string(),
@@ -655,7 +697,7 @@ impl Database {
                     enums: BTreeMap::new(),
                     conns: BTreeMap::new(),
                     always_on: BTreeSet::new(),
-                    bel_relative_location : None
+                    tile_configures_external_tiles : BTreeSet::new(),
                 }
             };
             self.tilebits
@@ -679,7 +721,7 @@ impl Database {
                     enums: BTreeMap::new(),
                     conns: BTreeMap::new(),
                     always_on: BTreeSet::new(),
-                    bel_relative_location : None
+                    tile_configures_external_tiles : BTreeSet::new(),
                 }
             };
             self.ipbits

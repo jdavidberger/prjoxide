@@ -1,3 +1,4 @@
+use log::warn;
 // Wire normalisation for Nexus
 use crate::chip::*;
 use regex::Regex;
@@ -77,6 +78,9 @@ pub fn handle_edge_name(
             "01" => {
                 // H01xyy00 --> x+1, H01xyy01
                 if tx == max_x - 1 {
+                    if hm[4].to_string() != "00" {
+                        warn!("Invalid edge name {wn} - {hm:?}. hm[4] == '00'")
+                    }
                     assert_eq!(hm[4].to_string(), "00");
                     return (format!("H01{}{}01", &hm[2], &hm[3]), wx + 1, wy);
                 }
@@ -270,7 +274,9 @@ pub fn normalize_wire(chip: &Chip, tile: &Tile, wire: &str) -> String {
     }
     let tx = tile.x as i32;
     let ty = tile.y as i32;
-    if tile.name.contains("TAP") && wn.starts_with("H") {
+
+
+    if tile.name.contains("TAP") && wn.starts_with("H") && !wn.starts_with("HFIE") {
         if wx < tx {
             return format!("BRANCH_L:{}", wn);
         } else if wx > tx {

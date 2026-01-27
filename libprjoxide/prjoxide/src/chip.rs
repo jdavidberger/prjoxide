@@ -223,10 +223,6 @@ impl Chip {
                 tile.from_fasm(db, ft);
             } else {
                 error!("Unknown tile {}", tn);
-                error!("Tile groups: ");
-                chip.tilegroups.iter().for_each(|(k, _)| {
-                    error!("- {}", k);
-                });
             }
         }
         chip.tiles_to_cram();
@@ -415,11 +411,31 @@ impl Chip {
     pub fn create_tilegroups(&mut self, db: &mut Database) {
         // Create tilegroups for all bels
         for t in self.tiles.iter() {
-            let bels = get_tile_bels(&t.tiletype, &db.tile_bitdb(&self.family, &t.tiletype).db);
+            let tile_bit_db = &db.tile_bitdb(&self.family, &t.tiletype).db;
+            let bels = get_tile_bels(&t.tiletype, tile_bit_db);
             for bel in bels {
                 let bel_name = format!("R{}C{}_{}", (t.y as i32) + bel.rel_y, (t.x as i32) + bel.rel_x, bel.name);
-                let bel_tiles = get_bel_tiles(&self, t, &bel);
-                self.tilegroups.insert(bel_name, bel_tiles);
+
+                let bel_tiles = {
+                    if tile_bit_db.tile_configures_external_tiles.is_empty() {
+                        get_bel_tiles(&self, t, &bel, &tile_bit_db.tile_configures_external_tiles.iter().cloned().next())
+                    } else {
+                        vec![t.name.clone()]
+                    }
+                };
+
+                match self.tilegroups.get_mut(&bel_name) {
+                    Some(tiles) => {
+                        info!("Appending tilegroup {bel_name} with {bel_tiles:?}");
+                        tiles.append(&mut bel_tiles.clone());
+                    }
+                    None => {
+                        if !bel_name.contains("SLICE") {
+                            info!("Creating tilegroup {bel_name} with {bel_tiles:?}");
+                        }
+                        self.tilegroups.insert(bel_name, bel_tiles);
+                    }
+                }
             }
         }
         // Create a tilegroup for chipwide settings
@@ -431,7 +447,7 @@ impl Chip {
     // This sets applicable words and enums to all tiles that match inside the tilegroup
     pub fn apply_tilegroup(&mut self, group: &str, db: &mut Database, ft: &FasmTile) {
         let tg = self.tilegroups.get(group).unwrap_or_else(|| panic!("No tilegroup named {}", group)).clone();
-        let tdbs : Vec<TileBitsDatabase> = tg.iter().map(|x| db.tile_bitdb(&self.family, &self.tile_by_name(x).unwrap().tiletype).db.clone()).collect();
+        let tdbs : Vec<TileBitsDatabase> = tg.iter().map(|x| db.tile_bitdb(&self.family, &self.tile_by_name(x).expect(format!("Could not find tile named '{x}' from {group} (tiles: {tg:?})").as_str()).tiletype).db.clone()).collect();
         for i in 0..2 {
             // Process "BASE_" enums first
             for (k, v) in ft

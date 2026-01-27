@@ -9,7 +9,8 @@ use ron::ser::PrettyConfig;
 use serde::Serialize;
 use std::fs::File;
 use std::io::prelude::*;
-use log::{info, warn};
+
+use log::{debug, info, trace, warn};
 
 #[derive(Clone, Debug)]
 pub enum FuzzMode {
@@ -115,9 +116,7 @@ impl Fuzzer {
             desc: desc.to_string(),
         }
     }
-    fn add_sample(&mut self, db: &mut Database, key: FuzzKey, bitfile: &str) {
-        let parsed_bitstream = BitstreamParser::parse_file(db, bitfile).unwrap();
-        let delta: ChipDelta = parsed_bitstream.delta(&self.base);
+    fn add_sample_delta(&mut self, key: FuzzKey, delta: ChipDelta) {
         if let Some(d) = self.deltas.get_mut(&key) {
             // If key already in delta, take the intersection of the two
             let intersect: ChipDelta = d
@@ -136,6 +135,13 @@ impl Fuzzer {
             self.deltas.insert(key, delta);
         }
     }
+    fn add_sample(&mut self, db: &mut Database, key: FuzzKey, bitfile: &str) {
+        let parsed_bitstream = BitstreamParser::parse_file(db, bitfile).unwrap();
+        let delta: ChipDelta = parsed_bitstream.delta(&self.base);
+        trace!("Sample delta {bitfile} {key:?} {delta:?}");
+        self.add_sample_delta(key, delta);
+    }
+
     pub fn add_pip_sample(&mut self, db: &mut Database, from_wire: &str, bitfile: &str) {
         self.add_sample(
             db,
@@ -144,6 +150,15 @@ impl Fuzzer {
                 allow_partial_deltas : false
             },
             bitfile,
+        );
+    }
+    pub fn add_pip_sample_delta(&mut self, from_wire: &str, delta: ChipDelta) {
+        self.add_sample_delta(
+            FuzzKey::PipKey {
+                from_wire: from_wire.to_string(),
+                allow_partial_deltas : false
+            },
+            delta,
         );
     }
     pub fn add_pip_sample_with_partial_delta(&mut self, db: &mut Database, from_wire: &str, bitfile: &str) {
@@ -227,7 +242,7 @@ impl Fuzzer {
                     continue;
                 }
                 if changed_tiles.len() == 0 {
-                    info!("No changed tiles for {from_wire} -> {to_wire}");
+                    debug!("No changed tiles for {from_wire} -> {to_wire}");
                     // No changes; it is a fixed connection
                     if skip_fixed {
                         continue;
@@ -303,8 +318,6 @@ impl Fuzzer {
             }
         }
 
-	info!("Found {} pips for {} deltas", findings, self.deltas.len());
-
 	findings
     }
 
@@ -367,7 +380,7 @@ impl Fuzzer {
                 mark_relative_to
             } => {
                 if self.deltas.len() < 2 {
-                    warn!("Need at least two deltas got {}", self.deltas.len());
+                    warn!("Need at least two deltas got {} for fuzzmode {name}", self.deltas.len());
                     return;
                 }
                 for tile in changed_tiles {
@@ -451,16 +464,19 @@ impl Fuzzer {
                                     let tile_db =
                                         db.tile_bitdb(&self.base.family, &tile_data.tiletype);
 
+                                    tile_db.add_enum_option(&name, &option, &self.desc, b);
+
                                     if let Some(relative_tile) = mark_relative_to.clone() {
+                                        let ref_tile = self.base.tile_by_name(&relative_tile).unwrap();
                                         let offset = {
-                                            let ref_tile = self.base.tile_by_name(&relative_tile).unwrap();
-                                            (ref_tile.x as i32 - tile_data.x as i32,
+                                            (ref_tile.tiletype.clone(),
+                                             ref_tile.x as i32 - tile_data.x as i32,
                                              ref_tile.y as i32 - tile_data.y as i32)
                                         };
-                                        tile_db.set_bel_offset(Some(offset));
-                                    }
 
-                                    tile_db.add_enum_option(&name, &option, &self.desc, b);
+                                        tile_db.set_bel_offset(Some(offset.clone()));
+                                    };
+
                                 }
                             }
                         }

@@ -3,6 +3,7 @@ use crate::database::TileBitsDatabase;
 use itertools::Itertools;
 use std::collections::BTreeSet;
 use std::convert::TryInto;
+use log::{debug, warn};
 
 // A reference to a wire in a relatively located tile
 #[derive(Clone)]
@@ -406,7 +407,7 @@ impl Bel {
         }
     }
 
-    pub fn make_seio18_relative(z: usize, rel: (i32, i32)) -> Bel {
+    pub fn make_seio18(z: usize) -> Bel {
         let ch = Z_TO_CHAR[z];
         let postfix = if z == 1 {
             format!("SEIO18_CORE_IO{}", ch)
@@ -440,15 +441,12 @@ impl Bel {
                 output!(&postfix, "INLP", "DPHY LP mode input buffer output"),
                 output!(&postfix, "INADC", "analog signal out to ADC"),
             ],
-            rel_x: rel.0,
-            rel_y: rel.1,
+            rel_x: 0,
+            rel_y: 0,
             z: z as u32,
         }
     }
 
-    pub fn make_seio18(z: usize) -> Bel {
-        Self::make_seio18_relative(z, (0, 0))
-    }
 
     pub fn make_diffio18() -> Bel {
         let postfix = format!("DIFFIO18_CORE_IOA");
@@ -652,6 +650,14 @@ impl Bel {
             z: 0,
         }
     }
+
+    pub fn with_rel(self, rel: (i32, i32)) -> Bel {
+        Bel {
+            rel_x: rel.0,
+            rel_y: rel.1,
+            ..self
+        }
+    }
 }
 
 pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
@@ -771,58 +777,68 @@ pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
 
         "MIPI_DPHY_0" => vec![Bel::make_dphy_core("TDPHY_CORE2", &tiledata, -2, 0)],
         "MIPI_DPHY_1" => vec![Bel::make_dphy_core("TDPHY_CORE26", &tiledata, -2, 0)],
+        "MIB_T_TAP" | "TAP_CIBT" | "TAP_CIB" | "TAP_PLC" | "CIB" | "MIB_LR" => vec![], // Silence warnings
         _ => {
-            let bel_relative_location = tiledata.bel_relative_location.unwrap_or((0, 0));
-            if bel_relative_location == (0, 0) {
-                let enum_bels = tiledata.enums.iter().flat_map(|(key, _value)|match key.as_str() {
-                    "PIOA.BASE_TYPE" => vec![Bel::make_seio33(0)],
-                    "PIOB.BASE_TYPE" => vec![Bel::make_seio33(1)],
-                    "PIOA.SEIO18.BASE_TYPE" => vec![Bel::make_seio18_relative(0, bel_relative_location)],
-                    "PIOB.SEIO18.BASE_TYPE" => vec![Bel::make_seio18_relative(1, bel_relative_location)],
-                    "PIOA.DIFFIO18.BASE_TYPE" => vec![Bel::make_diffio18()],
-                    "PIOB.DIFFIO18.BASE_TYPE" => vec![Bel::make_diffio18()],
-                    "SIOLOGICA.GSR" => vec![Bel::make_iol(tiledata, true, 0)],
-                    "SIOLOGICB.GSR" => vec![Bel::make_iol(tiledata, true, 1)],
-                    "IOLOGICA.GSR" => vec![Bel::make_iol(tiledata, false, 0)],
-                    "IOLOGICB.GSR" => vec![Bel::make_iol(tiledata, false, 1)],
-                    _ => vec![]
-                });
-                let inferred_bels = enum_bels.collect_vec();
-                if inferred_bels.is_empty() {
-                    println!("No BEL for tile type {}", &stt);
-                }
-                inferred_bels
-            } else {
-                vec![]
+            let bel_relative_location = tiledata.tile_configures_external_tiles.iter().next().cloned().unwrap_or(("".to_string(), 0, 0));
+
+            let enum_bels = tiledata.enums.iter().flat_map(|(key, _value)|match key.as_str() {
+                "PIOA.BASE_TYPE" => vec![Bel::make_seio33(0)],
+                "PIOB.BASE_TYPE" => vec![Bel::make_seio33(1)],
+                "PIOA.SEIO18.BASE_TYPE" => vec![Bel::make_seio18(0)],
+                "PIOB.SEIO18.BASE_TYPE" => vec![Bel::make_seio18(1)],
+                "PIOA.DIFFIO18.BASE_TYPE" => vec![Bel::make_diffio18()],
+                "PIOB.DIFFIO18.BASE_TYPE" => vec![Bel::make_diffio18()],
+                "SIOLOGICA.GSR" => vec![Bel::make_iol(tiledata, true, 0)],
+                "SIOLOGICB.GSR" => vec![Bel::make_iol(tiledata, true, 1)],
+                "IOLOGICA.GSR" => vec![Bel::make_iol(tiledata, false, 0)],
+                "IOLOGICB.GSR" => vec![Bel::make_iol(tiledata, false, 1)],
+                _ => vec![]
+            }).map(|x| {
+                x.with_rel((bel_relative_location.1, bel_relative_location.2))
+            });
+            let inferred_bels = enum_bels.collect_vec();
+            if inferred_bels.is_empty() {
+                debug!("No BEL for tile type {}", &stt);
             }
+            inferred_bels
 	  },
     }
 }
 
 // Get the tiles that a bel's configuration might be split across
-pub fn get_bel_tiles(chip: &Chip, tile: &Tile, bel: &Bel) -> Vec<String> {
+pub fn get_bel_tiles(chip: &Chip, tile: &Tile, bel: &Bel, rel: &Option<(String, i32, i32)>) -> Vec<String> {
     let tn = tile.name.to_string();
     let rel_tile = |dx: i32, dy: i32, tt: &str| {
         chip.tile_by_xy_type((tile.x as i32 + dx).try_into().unwrap(),
             (tile.y as i32 + dy).try_into().unwrap(), tt).unwrap().name.to_string()
     };
 
-    let rel_tile_prefix = |dx, dy, tt_prefix| {
-        for tile in chip.tiles_by_xy(tile.x + dx, tile.y + dy).iter() {
+    let rel_tile_prefix = |dx:i32, dy:i32, tt_prefix| {
+        let nx = tile.x.checked_add_signed(dx).unwrap();
+        let ny = tile.y.checked_add_signed(dy).unwrap();
+        for tile in chip.tiles_by_xy(nx, ny).iter() {
             if tile.tiletype.starts_with(tt_prefix) {
                 return tile.name.to_string();
             }
         }
-        panic!("no tile matched prefix ({}, {}, {})", tile.x + dx, tile.y + dy, tt_prefix);
+        warn!("no tile matched prefix ({}, {}, {}) for {}", nx, ny, tt_prefix, tile.name);
+        "".to_string()
     };
     let rel_tile_suffix = |dx, dy, tt_suffix| {
-        for tile in chip.tiles_by_xy(tile.x + dx, tile.y + dy).iter() {
+        let nx = tile.x.checked_add_signed(dx).unwrap();
+        let ny = tile.y.checked_add_signed(dy).unwrap();
+        for tile in chip.tiles_by_xy(nx, ny).iter() {
             if tile.tiletype.ends_with(tt_suffix) {
                 return tile.name.to_string();
             }
         }
-        panic!("no tile matched suffix ({}, {}, {})", tile.x + dx, tile.y + dy, tt_suffix);
+        warn!("no tile matched suffix ({}, {}, {}) for {}", nx, ny, tt_suffix, tile.name);
+        "".to_string()
     };
+
+    if let Some(rel_offset) = rel {
+        return vec![rel_tile_suffix(rel_offset.1, rel_offset.2, "")];
+    }
 
     let tt = &tile.tiletype[..];
     match &bel.beltype[..] {

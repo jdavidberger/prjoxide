@@ -7,6 +7,7 @@ use std::iter::FromIterator;
 use ron::ser::PrettyConfig;
 use std::fs::File;
 use std::io::prelude::*;
+use log::error;
 use serde::Serialize;
 
 pub enum IPFuzzMode {
@@ -73,11 +74,16 @@ impl IPFuzzer {
     }
     fn add_sample(&mut self, db: &mut Database, key: IPFuzzKey, bitfile: &str) {
         let parsed_bitstream = BitstreamParser::parse_file(db, bitfile).unwrap();
-        let addr = db
+        let addr_opt = db
             .device_baseaddrs(&parsed_bitstream.family, &parsed_bitstream.device)
             .regions
-            .get(&self.ipcore)
-            .unwrap();
+            .get(&self.ipcore);
+
+        if addr_opt.is_none() {
+            error!("Sample added for {} {} for ip core {} but base address is not known for it.", parsed_bitstream.family, parsed_bitstream.device, self.ipcore);
+        }
+
+        let addr = addr_opt.unwrap();
         let delta: IPDelta =
             parsed_bitstream.ip_delta(&self.base, addr.addr, addr.addr + (1 << addr.abits));
         self.deltas.insert(key, delta);
@@ -191,12 +197,9 @@ impl IPFuzzer {
                 enumerate_arrays: false,
                 separate_tuple_members: false,
             };
-
+        
             let buf = ron::ser::to_string_pretty(&self.deltas, pretty).unwrap();
-            File::create(format!(
-                "{}.ron",
-		filename
-            ))
+            File::create(format!("{}.ron", filename))
             .unwrap()
             .write_all(buf.as_bytes())
             .unwrap();
