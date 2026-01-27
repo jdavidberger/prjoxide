@@ -1,7 +1,13 @@
+import itertools
+import random
 import re
+from collections.abc import Iterable
+
 import database
 from collections import defaultdict
 import lapie
+
+import cachecontrol
 
 pos_re = re.compile(r'R(\d+)C(\d+)')
 
@@ -113,26 +119,26 @@ _full_node_set = {}
 def get_full_node_set(device):
     if device not in _full_node_set:
         all_nodes = lapie.get_full_node_list(device)
-        _full_node_set[device] = set(all_nodes)
+        _full_node_set[device] = sorted(list(set([n for n in all_nodes if len(n)])))
     return _full_node_set[device]
 
 
-def get_nodes_for_tile(device, tile, owned = False):
+def get_node_list_for_tile(device, tile, owned = False):
     if device not in _node_list_lookup:
         all_nodes = lapie.get_full_node_list(device)
         _node_list_lookup[device] = defaultdict(list)
-        _node_owned_lookup[device] = defaultdict(list)        
+        _node_owned_lookup[device] = defaultdict(list)
         for name in all_nodes:
             rc = get_rc_from_name(device, name)
 
             if rc is None:
                 continue
             elif rc[0] < 0 or rc[1] < 0:
-                print(f"Nodename {name} has negative rc: {rc}")                
+                print(f"Nodename {name} has negative rc: {rc}")
             name_no_rc = "_".join(name.split("_")[1:])
             m = _spine_regex.match(name_no_rc)
             if m is not None:
-                (r,c) = rc
+                (r, c) = rc
                 orientation = m.group(1)
                 size = int(m.group(2))
                 direction = m.group(3)
@@ -141,9 +147,9 @@ def get_nodes_for_tile(device, tile, owned = False):
 
                 if size == 0:
                     continue
-                
-                assert(orientation in ["H", "V"])
-                assert(direction in ["N","E","W","S"])
+
+                assert (orientation in ["H", "V"])
+                assert (direction in ["N", "E", "W", "S"])
 
                 (dir_x, dir_y) = (0, 0)
                 if direction == "N":
@@ -157,44 +163,56 @@ def get_nodes_for_tile(device, tile, owned = False):
 
                 rs = r - dir_y * segment
                 cs = c - dir_x * segment
-                
+
                 for i in range(0, size + 1):
                     ro = rs + dir_y * i
                     co = cs + dir_x * i
                     alias_name = f"R{ro}C{co}{orientation}{size:02}{direction}{track:02}{i:02}"
-                    #_node_list_lookup[device][ro, co].append(name)
+                    # _node_list_lookup[device][ro, co].append(name)
                     if i == 0:
-                        _node_owned_lookup[device][rc].append(name)                        
+                        _node_owned_lookup[device][rc].append(name)
             else:
                 _node_list_lookup[device][rc].append(name)
                 _node_owned_lookup[device][rc].append(name)
 
-    def get_node_list_for_tile(t):
+    def _get_node_list_for_tile(t):
         return (_node_owned_lookup if owned else _node_list_lookup)[device].get(get_rc_from_name(device, t), [])
-                
+
     if isinstance(tile, list):
-        nodes2tile = {n:t for t in tile for n in get_node_list_for_tile(t)}
+        return {n:t for t in tile for n in _get_node_list_for_tile(t)}
+    else:
+        return _get_node_list_for_tile(tile)
+
+def get_nodes_for_tile(device, tile, owned = False):
+    if isinstance(tile, list):
+        nodes2tile = {n:t for t in tile for n in get_node_list_for_tile(device, t, owned)}
         node_info = {n.name:n for n in lapie.get_node_data(device, list(nodes2tile.keys()), False)}
 
         tile_nodes = defaultdict(dict)
-        for n, nifo in node_info.items():
+        for n, ninfo in node_info.items():
             tile_nodes[nodes2tile[n]][n.name] = ninfo        
         
         return tile_nodes
     else:
-        tile_nodes = get_node_list_for_tile(tile)
+        tile_nodes = get_node_list_for_tile(device, tile, owned)
         if len(tile_nodes) == 0:
             return {}
     
         return {n.name:n for n in lapie.get_node_data(device, tile_nodes, False)}
 
-
-def get_tiles_by_rc(device, rc):
+_get_tiles_by_rc = {}
+def get_tiles_by_rc(device, rc = None):
     if isinstance(rc, str):
         rc = get_rc_from_name(device, rc)
 
-    tilegrid = database.get_tilegrid(device)['tiles']
-    return {k:v for k,v in tilegrid.items() if (v['y'], v['x']) == rc}
+    if device not in _get_tiles_by_rc:
+        tilegrid = database.get_tilegrid(device)['tiles']
+        _get_tiles_by_rc[device] = defaultdict(dict)
+        for k,v in tilegrid.items():
+            nrc = (v['y'], v['x'])
+            _get_tiles_by_rc[device][nrc][k] = v
+
+    return _get_tiles_by_rc[device][rc]
 
 
 
@@ -289,4 +307,191 @@ def draw_rc(rcs):
             print("■" if (x,y) in rcs else " " , end='')
         print()
 
+def get_wires_for_tiles(device):
+    anon_nodes = defaultdict(lambda : defaultdict(list))
+    for n in get_full_node_set(device):
+        wire_name = "_".join(n.split("_")[1:])
+        rc = get_rc_from_name(device, n)
+        for tile in sorted(get_tiles_by_rc(device, rc)):
+            tiletype = tile.split(":")[-1]
+            anon_nodes[tiletype][wire_name].append(tile)
 
+    return anon_nodes
+
+def get_wires_for_sites(device):
+    anon_nodes = defaultdict(lambda : defaultdict(list))
+    sites = database.get_sites(device)
+
+    for site, site_info in sites.items():
+        pins = site_info['pins']
+        pin_nodes = [p["pin_node"] for p in pins]
+
+        for n in pin_nodes:
+            wire_name = "_".join(n.split("_")[1:])
+            rc = get_rc_from_name(device, n)
+
+            anon_nodes[site_info["type"]][wire_name].append(site)
+    return anon_nodes
+
+def get_representative_nodes_data(device, seed = 42, exclude_set = []):
+    rep_nodes = get_wires_for_tiles(device)
+    nodes = []
+    random.seed(42)
+
+    lookup = {}
+    for tiletype, wire_dict in sorted(rep_nodes.items()):
+        if tiletype not in exclude_set:
+            for wire, tiles in sorted(wire_dict.items()):
+                tile = random.choice(tiles)
+                (r,c) = get_rc_from_name(device, tile)
+                wire_name = f"R{r}C{c}_{wire}"
+                nodes.append(f"R{r}C{c}_{wire}")
+                lookup[wire_name] = (tiletype, wire, tile)
+
+    nodes = sorted(nodes)
+
+    batches = list(itertools.batched(nodes, 5000))
+    batch_returns = [None] * len(batches)
+
+    def f(idx_batch):
+        (idx, batch) = idx_batch
+        batch_returns[idx] = lapie.get_node_data(device, list(batch))
+
+    import fuzzloops
+    fuzzloops.parallel_foreach(enumerate(batches), f, jobs=len(batches))
+
+    node_data = {a:v
+                 for d in batch_returns
+                 for v in d
+                 for a in v.aliases}
+
+    rtn = defaultdict(list)
+    for wire_name, lu in lookup.items():
+        rtn[lu[0]].append((lu[2], node_data[wire_name]))
+
+    return rtn
+
+def get_node_data_local_graph(device, node, should_expand = None):
+    if isinstance(node, Iterable):
+        node = list(node)
+
+    if not isinstance(node, list):
+        node = [node]
+
+    rc = get_rc_from_name(device, node[0])
+    def def_should_expand(node):
+        return rc == get_rc_from_name(device, node)
+
+    if should_expand is None:
+        should_expand = def_should_expand
+
+    query_list = node
+
+    graph = {}
+    while len(query_list) > 0:
+        new_nodes = lapie.get_node_data(device, query_list)
+        #new_nodes = [k for k in lapie.get_list_arc(device)
+        query_list = []
+
+        for n in new_nodes:
+            graph[n.name] = n
+
+            for p in n.pips():
+                for wire in [p.to_wire, p.from_wire]:
+                    if wire not in graph and should_expand(wire):
+                        query_list.append(wire)
+    return graph
+
+def get_local_pips_for_site(device, site, include_interface_pips = True):
+    if isinstance(site, str):
+        sites = database.get_sites(device)
+        site = sites[site]
+
+    site_nodes = [p["pin_node"] for p in site["pins"]]
+
+    return get_local_pips_for_nodes(device, site_nodes,
+                                    include_interface_pips = include_interface_pips,
+                                    should_expand = lambda x: site["type"] in x)
+
+def get_local_pips_for_nodes(device, nodes, should_expand = None, include_interface_pips = True, executor = None):
+    if executor is not None:
+        return executor.submit(get_local_pips_for_nodes, device, nodes, should_expand = should_expand ,include_interface_pips = include_interface_pips)
+
+    local_graph = get_node_data_local_graph(device, nodes, should_expand = should_expand)
+
+    def should_include(p):
+        if include_interface_pips:
+            return p.from_wire in local_graph or p.to_wire in local_graph
+        else:
+            return p.from_wire in local_graph and p.to_wire in local_graph
+
+    pips = [(p.from_wire, p.to_wire) for n, info, in local_graph.items() for p in info.pips() if
+            should_include(p)]
+
+    return sorted(set(pips)), local_graph
+
+def get_representative_nodes_for_tiletype(device, tiletype):
+    node_set = None
+
+    for tile in get_tiles_by_tiletype(device, tiletype):
+        nodes = set(["_".join(n.split("_")[1:]) for n in get_node_list_for_tile(device, tile)])
+        if node_set is None:
+            node_set = nodes
+        else:
+            node_set = node_set & nodes
+    if node_set is None:
+        return set()
+
+    return node_set
+
+def get_outlier_nodes_for_tiletype(device, tiletype):
+    repr_nodes = get_representative_nodes_for_tiletype(device, tiletype)
+
+    outliers = {}
+    for tile in get_tiles_by_tiletype(device, tiletype):
+        nodes = set(["_".join(n.split("_")[1:]) for n in get_node_list_for_tile(device, tile)])
+
+        node_outliers = nodes - repr_nodes
+
+        if len(node_outliers) > 0:
+            outliers[tile] = node_outliers
+
+    return outliers
+
+@cachecontrol.cache_fn()
+def get_connections_for_device(device):
+    arcs = lapie.get_list_arc(device)
+
+    connections = {}
+
+    for arc_node, arc_node_info in arcs.items():
+        connections[arc_node] = set([p.to_wire for p in arc_node_info.downhill_pips])
+
+    return connections
+
+def find_path(device, frm, to):
+    nodes = lapie.get_node_data(device, [frm])
+
+    edges = {}
+    visited = set()
+    found = False
+    while not found:
+        query = set()
+        for n in nodes:
+            for p in n.uphill_pips:
+                if p.to_wire == to:
+                    found = True
+                    break
+
+                if p.to_wire not in visited:
+                    edges[p.to_wire] = n
+                    visited.add(p.to_wire)
+                    query.add(p.to_wire)
+        nodes = lapie.get_node_data(device, query)
+
+    path = []
+    c = to
+    while c != frm:
+        path.append(c)
+        c = edges[c]
+    return path

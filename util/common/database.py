@@ -2,20 +2,39 @@
 Database and Database Path Management
 """
 import os
-from os import path
+from functools import lru_cache, cache
+from os import path, makedirs
 import json
 import subprocess
 from pathlib import Path
 import pyron as ron
 import gzip
 
-import sqlite3
-import lapie
-
 def get_oxide_root():
     """Return the absolute path to the Project Oxide repo root"""
     return path.abspath(path.join(__file__, "../../../"))
 
+def get_radiant_version():
+    # `lapie` seems to be renamed every version or so. Map that out here. Most installations will have
+    # the version name at the end of their path, so we just look at the radiant dir for a hint. The user
+    # can override this setting with a RADIANTVERSION env variable
+    known_versions = [ "2.2", "3.1", "2023", "2024", "2025" ]
+    RADIANT_DIR = os.environ.get("RADIANTDIR")
+    radiant_version= os.environ.get("RADIANTVERSION", None)
+
+    if radiant_version is None:
+        for version in known_versions:
+            if RADIANT_DIR.find(version) > -1:
+                radiant_version = version
+
+    if radiant_version is None:
+        radiant_version = "3.1"
+    return radiant_version
+
+def get_cache_dir():
+    path = get_oxide_root() + "/.cache/" + get_radiant_version()
+    makedirs(path, exist_ok=True)
+    return path
 
 def get_db_root():
     """
@@ -45,7 +64,22 @@ def get_db_subdir(family = None, device = None, package = None):
             os.mkdir(subdir)
     return subdir
 
-_tilegrids = {}
+def get_base_addrs(family, device = None):
+    if device is None:
+        device = family
+        family = device.split('-')[0]
+
+    tgjson = path.join(get_db_subdir(family, device), "baseaddr.json")
+    if path.exists(tgjson):
+        with open(tgjson, "r") as f:
+            try:
+                return json.load(f)["regions"]
+            except:
+                print(f"Exception encountered reading {tgjson}")
+                raise
+    return {}
+
+@cache
 def get_tilegrid(family, device = None):
     """
     Return the deserialised tilegrid for a family, device
@@ -54,18 +88,16 @@ def get_tilegrid(family, device = None):
         device = family
         family = device.split('-')[0]
 
-    if device not in _tilegrids:
-        tgjson = path.join(get_db_subdir(family, device), "tilegrid.json")
-        if path.exists(tgjson):
-            with open(tgjson, "r") as f:
-                try:
-                    _tilegrids[device] = json.load(f)
-                except:
-                    print(f"Exception encountered reading {tgjson}")
-                    raise
-        else:
-            _tilegrids[device] = {"tiles":{}}
-    return _tilegrids[device]
+    tgjson = path.join(get_db_subdir(family, device), "tilegrid.json")
+    if path.exists(tgjson):
+        with open(tgjson, "r") as f:
+            try:
+                return json.load(f)
+            except:
+                print(f"Exception encountered reading {tgjson}")
+                raise
+    else:
+        return {"tiles":{}}
 
 def get_iodb(family, device = None):
     """
@@ -105,23 +137,15 @@ def get_tiletypes(family):
 def get_db_commit():
     return subprocess.getoutput('git -C "{}" rev-parse HEAD'.format(get_db_root()))
 
-_sites = {}
+@cache
 def get_sites(family, device = None):
+    import lapie
+
     if device is None:
         device = family
         family = device.split('-')[0]
 
-    site_file = path.join(get_db_subdir(family, device), "sites.json.gz")
-    if site_file not in _sites:
-        if not path.exists(site_file):
-            sites = lapie.get_sites_with_pin(device)
-            with gzip.open(site_file, 'wb') as f:
-                f.write(json.dumps(sites).encode('utf-8'))        
-        
-        with gzip.open(site_file, 'r') as f:
-            _sites[site_file] = json.loads(f.read().decode('utf-8'))
-    return _sites[site_file]
-            
+    return lapie.get_sites_with_pin(device)
 
 def check_tiletype(tiletype, tiletype_info):
     pips = tiletype_info["pips"]

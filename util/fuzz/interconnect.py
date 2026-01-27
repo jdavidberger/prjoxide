@@ -1,8 +1,11 @@
 """
 Utilities for fuzzing interconect
 """
-
+import logging
 import threading
+from concurrent.futures.thread import ThreadPoolExecutor
+from pathlib import Path
+
 import tiles
 import libpyprjoxide
 import fuzzconfig
@@ -21,10 +24,12 @@ from collections import defaultdict
 
 workdir = tempfile.mkdtemp()
 
-def create_wires_file(config, wires, prefix = "", empty_version = False):
+def create_wires_file(config, wires, prefix = "", empty_version = False, executor = None):
     if empty_version:
         prefix = prefix + "_empty"
-        
+    if isinstance(wires, set):
+        wires = sorted(wires)
+
     if isinstance(wires, list):
         
         touched_tiles = set([tiles.get_rc_from_name(config.device, n) for w in wires for n in w])
@@ -65,10 +70,15 @@ module top (
 endmodule        
         """
     
-    vfile = path.join(workdir, f"{prefix}.v")
+    vfile = path.join(workdir, f"{prefix}{config.job}.v")
+    Path(vfile).parent.mkdir(parents=True, exist_ok=True)
+
     with open(vfile, 'w') as f:
         f.write(source)
-    return config.build_design(vfile, prefix = prefix)
+
+    if executor is not None:
+        return config.build_design_future(executor, vfile, prefix=prefix)
+    return config.build_design(vfile, prefix=prefix)
 
 def pips_to_sinks(pips):
     sinks = {}
@@ -92,14 +102,11 @@ def collect_sinks(config, nodenames, regex = False,
     if regex:
         all_nodes = lapie.get_full_node_list(config.device)
         regex = [re.compile(n) for n in nodenames]
-        print(regex, nodenames)        
         nodenames = [n for n in all_nodes if any([r for r in regex if r.search(n) is not None])]
         regex = False
-    
-    nodes = lapie.get_node_data(config.udb, nodenames, regex)
 
-    print(regex, {n.name:n.aliases for n in nodes})
-    
+    nodes = lapie.get_node_data(config.device, nodenames, regex)
+
     all_wirenames = set([n.name for n in nodes])
     all_pips = set()
     for node in nodes:
@@ -120,10 +127,10 @@ def collect_sinks(config, nodenames, regex = False,
     # Then filter using the pip predicate
     fuzz_pips = list(filter(lambda x: pip_predicate(x, all_wirenames), all_pips))
     if len(fuzz_pips) == 0:
-        print(f"No fuzz_pips defined for job {config}. Nodes: {nodes} {all_pips}")
-        return
+        logging.warning(f"No fuzz_pips defined for job {config}. Nodes: {nodes} {all_pips}")
+        return {}
+    logging.debug(f"Fuzz pips {len(fuzz_pips)}")
 
-    print(fuzz_pips)
     return pips_to_sinks(fuzz_pips)
 
 def fuzz_interconnect_sinks(
@@ -132,36 +139,60 @@ def fuzz_interconnect_sinks(
         full_mux_style=False,
         ignore_tiles=set(),
         extra_substs={},
-        fc_filter=lambda x: True
+        fc_filter=lambda x: True,
+        executor = None
     ):
     if sinks is None:
         return
 
+
     if not isinstance(sinks, dict):
         sinks = pips_to_sinks(sinks)
 
-    base_bitf = config.build_design(config.sv, extra_substs, "base_")
-        
-    def per_sink(to_wire):
-        if config.check_deltas(to_wire):
-            return
+    base_bitf_future = config.build_design_future(executor, config.sv, extra_substs, "base_")
 
-        # Get a unique prefix from the thread ID
-        prefix = "thread{}_{}_{}_{}_".format(threading.get_ident(), config.job, config.device, to_wire)
-        print(config.tiles)
-        fz = libpyprjoxide.Fuzzer.pip_fuzzer(fuzzconfig.db, base_bitf, set(config.tiles), to_wire, config.tiles[0], set(ignore_tiles), full_mux_style, not (fc_filter(to_wire)))
-        for from_wire in sinks[to_wire]:
-            arcs_attr = r', \dm:arcs ="{}.{}"'.format(to_wire, from_wire)
-            substs = extra_substs.copy()
-            substs["arcs_attr"] = arcs_attr
-            print(f"Building design for ({config.job} {config.device}) {to_wire} to {from_wire}")            
-            arc_bit = config.build_design(config.sv, substs, prefix)
-            fz.add_pip_sample(fuzzconfig.db, from_wire, arc_bit)
+    logging.info(f"Processing {len(sinks)} sinks for {sum([len(v) for k,v in sinks.items()])} designs for {config.job} {config.device}")
 
+    assert(len(config.tiles) > 0)
+
+    def process_bits(bitstreams, from_wires, to_wire):
+        base_bitf = bitstreams[0]
+        bitstreams = bitstreams[1:]
+        fz = libpyprjoxide.Fuzzer.pip_fuzzer(fuzzconfig.get_db(), base_bitf, set(config.tiles), to_wire,
+                                             config.tiles[0],
+                                             set(ignore_tiles), full_mux_style, not (fc_filter(to_wire)))
+
+        for (from_wire, arc_bit) in zip(from_wires, bitstreams):
+            fz.add_pip_sample(fuzzconfig.get_db(), from_wire, arc_bit if arc_bit is not None else base_bitf)
+
+        logging.debug(f"Solving for {to_wire}")
         config.solve(fz)
 
-    fuzzloops.parallel_foreach(list(sorted(sinks.keys())), per_sink)
-    
+    conns = tiles.get_connections_for_device(config.device)
+
+    with fuzzloops.Executor(executor) as executor:
+        for to_wire in sinks:
+            if config.check_deltas(to_wire):
+                continue
+
+            bitstream_futures = [base_bitf_future]
+            for from_wire in sinks[to_wire]:
+                arcs_attr = r', \dm:arcs ="{}.{}"'.format(to_wire, from_wire)
+                substs = extra_substs.copy()
+                substs["arcs_attr"] = arcs_attr
+
+                arc_bit = None
+                if to_wire in conns.get(from_wire, {}):
+                    logging.debug(f"{from_wire} -> {to_wire} is in arc list; not building file")
+                else:
+                    logging.debug(f"Building design for ({config.job} {config.device}) {to_wire} to {from_wire}")
+                    arc_bit = config.build_design_future(executor, config.sv, substs, f"{from_wire}/{to_wire}/")
+                    yield arc_bit
+
+                bitstream_futures.append(arc_bit)
+
+            yield fuzzloops.chain(bitstream_futures, process_bits, "Interconnect sink", sinks[to_wire], to_wire)
+
 def fuzz_interconnect(
         config,
         nodenames,
@@ -173,7 +204,8 @@ def fuzz_interconnect(
         full_mux_style=False,
         ignore_tiles=set(),
         extra_substs={},
-        fc_filter=lambda x: True
+        fc_filter=lambda x: True,
+        executor = None
     ):
     """
     Fuzz interconnect given a list of nodenames to analyse. Pips associated these nodenames will be found using the Tcl
@@ -197,14 +229,14 @@ def fuzz_interconnect(
     """
     if not fuzzconfig.should_fuzz_platform(config.device):
         return
-    
+
     sinks = collect_sinks(config, nodenames, regex = regex,
                           nodename_predicate = nodename_predicate,
                           pip_predicate = pip_predicate,
                           bidir=bidir,
                           nodename_filter_union=False)
 
-    fuzz_interconnect_sinks(config, sinks, full_mux_style, ignore_tiles, extra_substs, fc_filter)
+    yield from fuzz_interconnect_sinks(config, sinks, full_mux_style, ignore_tiles, extra_substs, fc_filter, executor=executor)
 
 def fuzz_interconnect_for_tiletype(device, tiletype):
     prototype = list(tiles.get_tiles_by_tiletype(device, tiletype).keys())[0]
@@ -235,7 +267,7 @@ def fuzz_interconnect_pins(config, site_name, extra_substs = {}, full_mux_style 
         is_output = pin_info['pin_node'] == pin_pip.from_wire
     
         prefix = "{}_{}_{}_".format(config.job, config.device, to_wire)
-        fz = libpyprjoxide.Fuzzer.pip_fuzzer(fuzzconfig.db, base_bitf,
+        fz = libpyprjoxide.Fuzzer.pip_fuzzer(fuzzconfig.get_db(), base_bitf,
                                              set(config.tiles),
                                              to_wire,
                                              config.tiles[0], set(), full_mux_style, not (fc_filter(to_wire)))
@@ -248,7 +280,7 @@ def fuzz_interconnect_pins(config, site_name, extra_substs = {}, full_mux_style 
         
         print(f"Building design for ({config.job} {config.device}) {to_wire} to {from_wire}")            
         arc_bit = config.build_design(config.sv, substs, prefix)
-        fz.add_pip_sample(fuzzconfig.db, from_wire, arc_bit)
+        fz.add_pip_sample(fuzzconfig.get_db(), from_wire, arc_bit)
 
         config.solve(fz)
 

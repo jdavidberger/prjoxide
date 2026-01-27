@@ -1,34 +1,27 @@
 """
 Python wrapper for `lapie`
 """
-import logging
-import sys
-from os import path
-import os
-import subprocess
-import database
-import tempfile
-import re
 import hashlib
+import logging
+import os
+import re
 import shutil
+import subprocess
+import tempfile
+import time
+from collections import defaultdict
+from functools import cache
+from os import path
+
+import cachier
 import fuzzconfig
 
-# `lapie` seems to be renamed every version or so. Map that out here. Most installations will have
-# the version name at the end of their path, so we just look at the radiant dir for a hint. The user
-# can override this setting with a RADIANTVERSION env variable
-known_versions = [ "2.2", "3.1", "2023", "2024", "2025" ]
-RADIANT_DIR = os.environ.get("RADIANTDIR")
-radiant_version= os.environ.get("RADIANTVERSION", None)
+import cachecontrol
+import database
+
+radiant_version = database.get_radiant_version()
+
 get_nodes = "dev_get_nodes"
-    
-if radiant_version is None:
-    for version in known_versions:
-        if RADIANT_DIR.find(version) > -1:
-            radiant_version = version
-
-if radiant_version is None:
-    radiant_version = "3.1"
-
 if radiant_version == "2023":
     tcltool = "lark"
     tcltool_log = "radiantc.log"
@@ -43,7 +36,7 @@ elif radiant_version == "2025" or radiant_version == "2024":
 else:
     tcltool = "lapie"
     tcltool_log = "lapie.log"
-    dev_enable_name = "LATCL_DEV_ENABLE"    
+    dev_enable_name = "LATCL_DEV_ENABLE"
     get_nodes = "get_nodes"
     
 def run(commands, workdir=None, stdout=None):
@@ -79,7 +72,18 @@ def run(commands, workdir=None, stdout=None):
     output = output[:output.find(pleasantry)].strip()
     return output
 
+run_with_udb_cnt = 0
 def run_with_udb(udb, commands, stdout = None):
+    global run_with_udb_cnt
+    run_with_udb_cnt = run_with_udb_cnt + 1
+    if not udb.endswith(".udb"):
+        device = udb
+        udb = f"/tmp/prjoxide_node_data/{device}.udb"
+        if not os.path.exists(udb):
+            config = fuzzconfig.FuzzConfig(device, f"extract-site-info-{device}", [])
+            config.setup()
+            shutil.copyfile(config.udb, udb)
+
     return run(['des_read_udb "{}"'.format(path.abspath(udb))] + commands, stdout = stdout)
 
 class PipInfo:
@@ -115,7 +119,6 @@ class NodeInfo:
 node_re = re.compile(r'^\[\s*\d+\]\s*([A-Z0-9a-z_]+)')
 alias_node_re = re.compile(r'^\s*Alias name = ([A-Z0-9a-z_]+)')
 pip_re = re.compile(r'^([A-Z0-9a-z_]+) (<--|<->|-->) ([A-Z0-9a-z_]+) \(Flags: .+, (\d+)\) \(Buffer: ([A-Z0-9a-z_]+)\)')
-#R1C77_JLFTRMFAB7_OSC_CORE <-- R1C75_JCIBMUXOUTA7 (Flags: ----j, 0) (Buffer: b_ciboutbuf)
 pin_re = re.compile(r'^Pin  : ([A-Z0-9a-z_]+)/([A-Z0-9a-z_]+) \(([A-Z0-9a-z_]+)\)')
 
 # Parsing is weird here since the format of the report can vary somewhat.
@@ -123,7 +126,7 @@ pin_re = re.compile(r'^Pin  : ([A-Z0-9a-z_]+)/([A-Z0-9a-z_]+) \(([A-Z0-9a-z_]+)\
 # can have a lot of aliases and the only clear indication of which name is normative is its the one
 # used in the connections.
 
-def parse_node_report(rpt):    
+def parse_node_report(rpt, node_keys):
     curr_node = None
     nodes_dict = {}
     nodes = []
@@ -150,6 +153,9 @@ def parse_node_report(rpt):
                 curr_node = get_node(new_name)
                 reset_curr_node = False
             curr_node.aliases.append(new_name)
+
+            if new_name in node_keys:
+                curr_node.name = new_name
             continue
 
         # If we get back into an alias section, we are onto a new node
@@ -208,11 +214,12 @@ def parse_sites(rpt):
 
     return sites
 
+@cachecontrol.cache_fn()
 def get_full_node_list(udb):
     workdir = f"/tmp/prjoxide_node_data/{udb}"
     nodefile = path.join(workdir, "full_nodes.txt")
     os.makedirs(workdir, exist_ok=True)
-    
+
     if not os.path.exists(nodefile):
         if not udb.endswith(".udb"):
             config = fuzzconfig.FuzzConfig(udb, "extract-site-info", [])
@@ -222,29 +229,64 @@ def get_full_node_list(udb):
     with open(nodefile, 'r') as nf:
         return [line.split(":")[-1].strip() for line in nf.read().split("\n")]
 
-def get_node_data(udb, nodes, regex=False):
+@cache
+def _get_list_arc(device):
+    nodefile = f"/tmp/prjoxide_node_data/{device}/arclist"
+    if not os.path.exists(nodefile):
+        run_with_udb(device, [f'dev_list_arc -file {nodefile} -jumpwire'], stdout=subprocess.DEVNULL)
+
+    with open(nodefile, 'r') as nf:
+        nodes = {}
+        arcs = set()
+        def get_node(n):
+            if n not in nodes:
+                nodes[n] = NodeInfo(n)
+            return nodes[n]
+
+        logging.info(f"Reading arc file {nodefile}")
+        for line in nf.readlines():
+            parts = line.split(" ")
+            if parts[2] != "-->":
+                print(line, parts)
+            assert parts[2] == "-->"
+
+            pip = PipInfo(parts[1], parts[3])
+            get_node(parts[1]).downhill_pips.append(pip)
+            get_node(parts[3]).uphill_pips.append(pip)
+
+        for n,info in nodes.items():
+            for t in info.pips():
+                arcs.add((t.from_wire, t.to_wire))
+
+        return arcs
+
+@cache
+def get_list_arc(device):
+    from nodes_database import NodesDatabase
+    node_db = NodesDatabase.get(device)
+    jmp = set(node_db.get_jumpwires())
+    if len(jmp) == 0:
+        jmp = _get_list_arc(device)
+        node_db.insert_jumpwires(jmp)
+
+    return jmp
+
+def _get_node_data(udb, nodes):
+    regex = False
+
     workdir = tempfile.mkdtemp()
     nodefile = path.join(workdir, "nodes.txt")
-    nodelist = ""
-    
-    if not isinstance(nodes, list):
-        nodelist = nodes
-        nodes = [nodes]        
-    elif len(nodes) == 1:
-        nodelist = nodes[0]
-    elif len(nodes) > 1:
-        nodes = sorted(set(nodes))
-        nodelist = "[list {}]".format(" ".join(nodes))
+    nodelist = "[list {}]".format(" ".join(nodes))
 
     logging.info(f"Querying for {len(nodes)} nodes {nodes[:10]}")
     key_input = "\n".join([radiant_version, udb, f"regex: {regex}", ''] + nodes)
     key = hashlib.md5(key_input.encode('utf-8')).hexdigest()
     key_path = f"/tmp/prjoxide_node_data/{key}"
     os.makedirs("/tmp/prjoxide_node_data", exist_ok=True)
-    
+
     if os.path.exists(key_path):
-        #print(f"Nodefile found at {key_path}")        
-        shutil.copyfile(key_path, nodefile)            
+        logging.debug(f"Nodefile found at {key_path}")
+        shutil.copyfile(key_path, nodefile)
     else:
         if not udb.endswith(".udb"):
             device = udb
@@ -253,29 +295,75 @@ def get_node_data(udb, nodes, regex=False):
                 config = fuzzconfig.FuzzConfig(device, f"extract-site-info-{device}", [])
                 config.setup()
                 shutil.copyfile(config.udb, udb)
-        
+
         re_slug = "-re " if regex else ""
         run_with_udb(udb, [f'dev_report_node -file {nodefile} [{get_nodes} {re_slug}{nodelist}]'], stdout = subprocess.DEVNULL)
         shutil.copyfile(nodefile, key_path)
         with open(key_path + ".input", 'w') as f:
             f.write(key_input)
-        #print(f"Nodefile cached at {key_path}")        
-        
+        logging.debug(f"Nodefile cached at {key_path}")
+
     with open(nodefile, 'r') as nf:
-        return parse_node_report(nf.read())
+        return parse_node_report(nf.read(), nodes)
 
-def get_sites(udb, rc = None):
-    if not udb.endswith(".udb"):
-        config = fuzzconfig.FuzzConfig(udb, "extract-site-info", [])
-        config.setup()
-        udb = config.udb
+def get_node_data(udb, nodes, regex=False, executor = None):
+    from nodes_database import NodesDatabase
+    import fuzzloops
 
+    if not isinstance(nodes, (list, set)):
+        nodes = [nodes]
+    else:
+        nodes = sorted(set(nodes))
+
+    if regex:
+        all_nodes = get_full_node_list(udb)
+        regex = [re.compile(n) for n in nodes]
+        nodes = sorted(set([n for n in all_nodes if any([r for r in regex if r.search(n) is not None])]))
+
+    db = NodesDatabase.get(udb)
+    nis = db.get_node_data(nodes)
+    missing = sorted({k for k in nodes if k not in nis})
+    futures = []
+
+    if len(missing):
+        cnt = 5000
+        logging.info(f"Getting from lapie: {missing[:10]}...")
+
+        with fuzzloops.Executor(executor) as local_executor:
+            def lapie_get_node_data(query):
+                s = time.time()
+                nodes = _get_node_data(udb, missing[:cnt])
+                logging.debug(f"{len(query)} N {len(query) / (time.time() - s)} N/sec ({(time.time() - s)} deltas)")
+                return nodes
+
+            def integrate_nodes(nodes):
+                db.insert_nodeinfos(nodes)
+                for n in nodes:
+                    nis[n.name] = n
+
+            while len(missing):
+                f = local_executor.submit(lapie_get_node_data, missing[:cnt])
+                missing = missing[cnt:]
+                futures.append(fuzzloops.chain(f, integrate_nodes))
+    if executor is not None:
+        return fuzzloops.chain(futures, lambda _: list(nis.values()))
+    else:
+        return list(nis.values())
+
+def _get_sites(udb, rc = None):
     rc_slug = ""
     if rc is not None:
         rc_slug = f"-row {rc[0]} -column {rc[1]}"
     rpt = run_with_udb(udb, [f'dev_list_site {rc_slug}'], stdout = subprocess.DEVNULL)
 
     return parse_sites(rpt)
+
+def get_sites(device, rc = None):
+    if rc is None:
+        return _get_sites(device, rc)
+
+    sites = get_sites_with_pin(device, rc)
+    return list(sites.keys())
 
 def parse_report_site(rpt):
     site_re = re.compile(
@@ -321,18 +409,20 @@ def parse_report_site(rpt):
 
     return sites
 
-def get_sites_with_pin(udb, rc = None):
-    if not udb.endswith(".udb"):
-        config = fuzzconfig.FuzzConfig(udb, "extract-site-info", [])
-        config.setup()
-        udb = config.udb
-        
-    rc_slug = ""
-    if rc is not None:
-        rc_slug = f"-row {rc[0]} -column {rc[1]}"
-    rpt = run_with_udb(udb, [f'dev_report_site {rc_slug}'])
+def get_sites_with_pin(device):
+    from nodes_database import NodesDatabase
 
-    return parse_report_site(rpt)
+    node_db = NodesDatabase.get(device)
+
+    sites = node_db.get_sites()
+
+    if len(sites) == 0:
+        rpt = run_with_udb(device, [f'dev_report_site'], stdout = subprocess.DEVNULL)
+        sites =  parse_report_site(rpt)
+
+        node_db.insert_sites(sites)
+
+    return sites
 
 
 def list_nets(udb):
