@@ -45,6 +45,9 @@ struct Pack {
     /// create background programmable bitstream (advanced).
     #[clap(long)]
     background: bool,
+    /// enable dynamic multiboot
+    #[clap(long)]
+    multiboot: bool,
     /// input FASM file.
     fasm: String,
     /// output bitstream.
@@ -61,6 +64,9 @@ impl Pack {
 
         if self.background {
             chip.settings.insert("background".to_string(), "1".to_string());
+        }
+        if self.multiboot {
+            chip.settings.insert("multiboot".to_string(), "1".to_string());
         }
         let bs = BitstreamParser::serialise_chip(&chip);
         let mut outfile = File::create(&self.bitstream).unwrap();

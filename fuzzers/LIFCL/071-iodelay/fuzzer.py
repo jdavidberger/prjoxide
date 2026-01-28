@@ -16,7 +16,7 @@ def create_cfgs(device):
                     (infos[0][0], primitive, FuzzConfig(job=f"{device}_{infos[0][0]}_{infos[0][1]}", device=device, tiles=infos[0][1]))
                 )
     return cfgs
-    
+
 
 
 configs = create_cfgs("LIFCL-33") + [
@@ -107,20 +107,18 @@ def main():
 
         nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.COARSE_DELAY".format(prim), ["0NS", "0P8NS", "1P6NS"],
             lambda x: get_substs(kv=("COARSE_DELAY", x)), False)
-
         if not s:
+            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.COARSE_DELAY_MODE".format(prim), ["DYNAMIC", "STATIC"],
+                lambda x: get_substs(kv=("COARSE_DELAY_MODE", x)), False)
+            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.EDGE_MONITOR".format(prim), ["ENABLED", "DISABLED"],
+                lambda x: get_substs(kv=("EDGE_MONITOR", x)), False)
+            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.WAIT_FOR_EDGE".format(prim), ["ENABLED", "DISABLED"],
+                lambda x: get_substs(kv=("WAIT_FOR_EDGE", x)), False)
+
             for pin in ["CIBCRS0", "CIBCRS1", "RANKSELECT", "RANKENABLE", "RANK0UPDATE", "RANK1UPDATE"]:
                 nonrouting.fuzz_enum_setting(cfg, empty, "{}.{}MUX".format(prim, pin), ["OFF", pin],
                     lambda x: get_substs(kv=(pin, x), mux=True), False)
 
-            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.COARSE_DELAY_MODE".format(prim), ["DYNAMIC", "STATIC"],
-                                         lambda x: get_substs(kv=("COARSE_DELAY_MODE", x)), False)                
-            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.EDGE_MONITOR".format(prim), ["ENABLED", "DISABLED"],
-                                         lambda x: get_substs(kv=("EDGE_MONITOR", x)), False)
-
-            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.WAIT_FOR_EDGE".format(prim), ["ENABLED", "DISABLED"],
-                                         lambda x: get_substs(kv=("WAIT_FOR_EDGE", x)), False)
-            
     fuzzloops.parallel_foreach(configs, per_config)
 
 if __name__ == "__main__":
