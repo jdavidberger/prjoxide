@@ -12,6 +12,7 @@ pub struct BitstreamParser {
     ecc14: u16,
     verbose: bool,
     metadata: Vec<String>,
+    comp_dic: [u8; 16],
 }
 
 // Magic sequences
@@ -79,6 +80,7 @@ impl BitstreamParser {
             ecc14: ECC_INIT,
             verbose: false,
             metadata: Vec::new(),
+            comp_dic: [0; 16],
         }
     }
 
@@ -102,6 +104,7 @@ impl BitstreamParser {
             ecc14: ECC_INIT,
             verbose: false,
             metadata: Vec::new(),
+            comp_dic: [0; 16],
         };
         b.write_string("LSCC"); // magic
         b.write_bytes(&COMMENT_START); // metadata start
@@ -472,6 +475,55 @@ impl BitstreamParser {
         Err("failed to find preamble")
     }
 
+    fn decompress_frame(&mut self, dest: &mut [u8]) {
+        let mut read_data : u16 = 0;
+        let mut remaining_bits : usize = 0;
+        // Based on the implementation in trellis
+
+        // Every byte can be encoded by on of 4 cases
+        // It's a prefix-free code so we can identify each one just by looking at the first bits:
+        // 0 -> Byte zero (0000 0000)
+        // 10 xxxx -> Stored byte in compression_dict, xxxx is the index (0-15)
+        // 11 xxxxxxxx -> Literal byte, xxxxxxxx is the encoded byte
+
+        for i in 0..dest.len() {
+            if remaining_bits == 0 {
+                read_data = self.get_byte() as u16;
+                remaining_bits = 8;
+            }
+            let mut next_bit = ((read_data >> (remaining_bits - 1)) & 1) == 1;
+            remaining_bits -= 1;
+            dest[i] = if next_bit {
+                if remaining_bits < 5 {
+                    read_data = (read_data << 8) | (self.get_byte() as u16);
+                    remaining_bits += 8;
+                }
+                next_bit = (read_data >> (remaining_bits-1) & 1) == 1;
+                remaining_bits -= 1;
+                if next_bit {
+                    // 11 xxxx xxxx: Literal byte, just read the next 8 bits & use that
+                    // we consumed 10 bits total
+                    if remaining_bits < 8 {
+                        read_data = (read_data << 8) | (self.get_byte() as u16);
+                        remaining_bits += 8;
+                    }
+                    let literal = ((read_data >> (remaining_bits - 8)) & 0xff) as u8;
+                    remaining_bits -= 8;
+                    literal
+                } else {
+                    // Starts with 10, it is a stored literal
+                    // 10 xxxx
+                    let idx = ((read_data >> (remaining_bits-4)) & 0xf) as usize;
+                    remaining_bits -= 4;
+                    self.comp_dic[15 - idx]
+                }
+            } else {
+                // 0: literal 0 byte
+                0
+            };
+        }
+    }
+
     // Parse the bitstream itself
     fn parse_bitstream(&mut self, db: &mut Database) -> Result<Chip, &'static str> {
         let mut curr_frame = 0;
@@ -603,6 +655,80 @@ impl BitstreamParser {
                     }
                     if cmp_crc {
                         self.check_crc16();
+                    }
+                }
+                LSC_WRITE_COMP_DIC => {
+                    self.skip_bytes(3);
+                    let mut tmp = [0 as u8; 16];
+                    self.copy_bytes(&mut tmp);
+                    self.comp_dic = tmp;
+                    println!("compression dictionary: {}",
+                        self.comp_dic.iter().map(|x| format!("{:02x}", x)).collect::<Vec<_>>().join(" "));
+                }
+                LSC_PROG_INCR_CMP => {
+                    let cfg = self.get_byte();
+                    let count = self.get_u16();
+                    let bits_per_frame: usize;
+                    let pad_bits: usize;
+                    let chip: &mut Chip;
+                    match curr_chip.as_mut() {
+                        Some(ch) => {
+                            bits_per_frame = ch.data.bits_per_frame;
+                            pad_bits = ch.data.frame_ecc_bits + ch.data.pad_bits_after_frame;
+                            chip = ch;
+                        }
+                        None => {
+                            return Err("got bitstream before idcode");
+                        }
+                    }
+                    println!("write {} compressed frames at 0x{:08x}", count, curr_frame);
+                    let mut frame_bytes = vec![0 as u8; 8 * ((bits_per_frame + 14 + 63) / 64)];
+                    assert_eq!(cfg, 0xD4);
+                    for frame in 0..count {
+                        self.decompress_frame(&mut frame_bytes);
+                        if self.verbose {
+                            println!("decompressed: {}",
+                                frame_bytes.iter().map(|x| format!("{:02x}", x)).collect::<Vec<_>>().join(" "));
+                        }
+                        self.ecc14 = ECC_INIT;
+                        for j in (0..bits_per_frame).rev() {
+                            let ofs = (j + pad_bits) as usize;
+                            if ((frame_bytes[(frame_bytes.len() - 1) - (ofs / 8)] >> (ofs % 8))
+                                & 0x01)
+                                == 0x01
+                            {
+                                let decoded_frame = chip.frame_addr_to_idx(curr_frame);
+                                if decoded_frame < chip.cram.frames {
+                                    chip.cram.set(decoded_frame, j, true);
+                                }
+                                if self.verbose {
+                                    println!("F0x{:08x}B{:04}", curr_frame, j);
+                                }
+                                self.update_ecc(true);
+                            } else {
+                                self.update_ecc(false);
+                            }
+                        }
+                        let parity = ((frame_bytes[frame_bytes.len() - 2] as u16) << 8
+                            | (frame_bytes[frame_bytes.len() - 1] as u16))
+                            & 0x3FFF;
+                        let exp_parity = self.finalise_ecc();
+
+                        // ECC calculation here is actually occasionally unsound,
+                        // as LUT RAM initialisation is masked from ECC calculation
+                        // as it changes at runtime. But it is too early to check this here.
+
+                        if self.verbose {
+                            println!("F0x{:08x}P{:014b}E{:014b}", curr_frame, parity, exp_parity);
+                        }
+                        if frame == count - 1 {
+                            self.check_crc16();
+                        }
+                        for _ in 0..4 {
+                            let d = self.get_byte();
+                            assert_eq!(d, 0xFF);
+                        }
+                        curr_frame += 1;
                     }
                 }
                 ISC_PROGRAM_DONE => {
