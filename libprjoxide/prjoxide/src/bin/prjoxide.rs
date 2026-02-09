@@ -48,6 +48,9 @@ struct Pack {
     /// enable dynamic multiboot
     #[clap(long)]
     multiboot: bool,
+    /// compress bitstream
+    #[clap(long)]
+    compress: bool,
     /// input FASM file.
     fasm: String,
     /// output bitstream.
@@ -68,6 +71,10 @@ impl Pack {
         if self.multiboot {
             chip.settings.insert("multiboot".to_string(), "1".to_string());
         }
+        if self.compress {
+            chip.settings.insert("compress".to_string(), "1".to_string());
+        }
+
         let bs = BitstreamParser::serialise_chip(&chip);
         let mut outfile = File::create(&self.bitstream).unwrap();
         outfile.write_all(&bs)?;

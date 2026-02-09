@@ -132,6 +132,7 @@ impl BitstreamParser {
         b.write_u32(ch.get_idcode());
         // Set CTRL0
         let mut ctrl0 = 0x00000000;
+        let mut compress = false;
         for (k, v) in ch.settings.iter() {
             if k == "background" && v == "1" {
                 ctrl0 |= 0x27800000;
@@ -139,22 +140,45 @@ impl BitstreamParser {
             if k == "multiboot" && v == "1" {
                 ctrl0 |= 1 << 19;
             }
+            if k == "compress" && v == "1" {
+                compress = true;
+            }
         }
         b.write_byte(LSC_PROG_CNTRL0);
         b.write_zeros(3);
         b.write_u32(ctrl0);
+        if compress {
+            b.compute_comp_dic(ch);
+            b.write_byte(LSC_WRITE_COMP_DIC);
+            b.write_zeros(3);
+            for i in 0..16 {
+                b.write_byte(b.comp_dic[i]);
+            }
+        }
         // Write "IO" frames
         b.write_frame_addr(0x8000);
-        b.write_frames(ch, 0x8000, 32);
+        if compress {
+            b.write_comp_frames(ch, 0x8000, 32);
+        } else {
+            b.write_frames(ch, 0x8000, 32);
+        }
         b.write_padding(17);
         // Write main frames
         b.write_byte(LSC_INIT_ADDRESS);
         b.write_zeros(3);
-        b.write_frames(ch, 0x0000, ch.data.frames - (32 + ch.tap_frame_count));
+        if compress {
+            b.write_comp_frames(ch, 0x0000, ch.data.frames - (32 + ch.tap_frame_count));
+        } else {
+            b.write_frames(ch, 0x8000, 32);
+        }
         b.write_padding(17);
         // Write tap frames
         b.write_frame_addr(0x8020);
-        b.write_frames(ch, 0x8020, ch.tap_frame_count);
+        if compress {
+            b.write_comp_frames(ch, 0x8020, ch.tap_frame_count);
+        } else {
+            b.write_frames(ch, 0x8000, 32);
+        }
         b.write_padding(17);
         // Write power control
         b.write_byte(LSC_POWER_CTRL);
@@ -339,6 +363,74 @@ impl BitstreamParser {
             self.write_byte(0xFF);
         }
     }
+    fn write_comp_frames(&mut self, c: &Chip, start_addr: u32, count: usize) {
+        self.write_byte(LSC_PROG_INCR_CMP);
+        self.write_byte(0xD4); // frame load settings
+        self.write_u16(count.try_into().unwrap());
+        let bits_per_frame = c.data.bits_per_frame;
+        let pad_bits = c.data.frame_ecc_bits + c.data.pad_bits_after_frame;
+        let mut frame_bytes = vec![0 as u8; 8 * ((bits_per_frame + 14 + 63) / 64)];
+        let total_frame_bytes = frame_bytes.len();
+        for f in 0..count {
+            let frame_addr: u32 = start_addr + (f as u32);
+            let frame_idx = c.frame_addr_to_idx(frame_addr);
+            self.ecc14 = ECC_INIT;
+            for b in frame_bytes.iter_mut() {
+                *b = 0;
+            }
+            for j in (0..bits_per_frame).rev() {
+                let ofs = (j + pad_bits) as usize;
+                let value = c.cram.get(frame_idx, j);
+                self.update_ecc(value);
+                if value {
+                    frame_bytes[(total_frame_bytes - 1) - (ofs / 8)] |= 1 << (ofs % 8);
+                }
+            }
+            let ecc = self.finalise_ecc();
+            frame_bytes[total_frame_bytes - 2] |= ((ecc >> 8) & 0x3F) as u8;
+            frame_bytes[total_frame_bytes - 1] |= (ecc & 0xFF) as u8;
+            self.write_comp_frame(&frame_bytes);
+            if f == count - 1 {
+                self.insert_crc();
+            }
+            for _ in 0..4 {
+                self.write_byte(0xFF);
+            }
+        }
+    }
+    fn compute_comp_dic(&mut self, c: &Chip) {
+        // precompute all frames to discover the 16 most common byte values for the dictionary
+        let mut histogram = [0 as usize; 256]; 
+        let bits_per_frame = c.data.bits_per_frame;
+        let pad_bits = c.data.frame_ecc_bits + c.data.pad_bits_after_frame;
+        let mut frame_bytes = vec![0 as u8; (bits_per_frame + 14 + 7) / 8];
+        let total_frame_bytes = frame_bytes.len();
+        for f in 0..c.cram.frames {
+            self.ecc14 = ECC_INIT;
+            for b in frame_bytes.iter_mut() {
+                *b = 0;
+            }
+            for j in (0..bits_per_frame).rev() {
+                let ofs = (j + pad_bits) as usize;
+                let value = c.cram.get(f, j);
+                if value {
+                    frame_bytes[(total_frame_bytes - 1) - (ofs / 8)] |= 1 << (ofs % 8);
+                }
+            }
+            for b in &frame_bytes {
+                histogram[*b as usize] += 1;
+            }
+        }
+        let mut pairs = [(0 as usize, 0 as u8); 256];
+        for i in 0..256 {
+            pairs[i] = (histogram[i], i as u8);
+        }
+        pairs.sort();
+        for i in 0..16 {
+            self.comp_dic[i] = pairs[240 + i].1;
+        }
+    }
+
     fn write_ip_config(&mut self, c: &Chip) {
         // Create continguous chunks
         let mut last_addr = None;
@@ -521,6 +613,54 @@ impl BitstreamParser {
                 // 0: literal 0 byte
                 0
             };
+        }
+    }
+
+    fn write_comp_frame(&mut self, frame: &[u8]) {
+        let mut buffer : u8 = 0;
+        let mut bits_in_buffer : usize = 0;
+        for b in frame {
+            let mut add_bit = |s: &mut Self, bit: bool| {
+                if bit {
+                    buffer |= 1 << (7 - bits_in_buffer);
+                }
+                bits_in_buffer += 1;
+                if bits_in_buffer == 8 {
+                    s.write_byte(buffer);
+                    bits_in_buffer = 0;
+                    buffer = 0;
+                }
+            };
+            let mut add_bits = |s: &mut Self, value: u16, len: usize| {
+                for i in (0..len).rev() {
+                    add_bit(s, (value & (1 << i)) != 0);
+                }
+
+            };
+            if *b == 0 {
+                // 0 byte -> 0 bit
+                add_bit(self, false);
+                continue;
+            }
+            let mut dict_found = false;
+            for i in 0..16 {
+                if self.comp_dic[i] == *b {
+                    // dictionary entry -> 0b10xxxx
+                    add_bits(self, 0b10, 2);
+                    add_bits(self, (15 - i) as u16, 4);
+                    dict_found = true;
+                    break;
+                }
+            }
+            if dict_found {
+                continue;
+            }
+            // literal -> 0b11xxxxxxxx
+            add_bits(self, 0b11, 2);
+            add_bits(self, *b as u16, 8);
+        }
+        if bits_in_buffer != 0 {
+            self.write_byte(buffer);
         }
     }
 
