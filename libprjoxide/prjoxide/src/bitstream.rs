@@ -169,7 +169,7 @@ impl BitstreamParser {
         if compress {
             b.write_comp_frames(ch, 0x0000, ch.data.frames - (32 + ch.tap_frame_count));
         } else {
-            b.write_frames(ch, 0x8000, 32);
+            b.write_frames(ch, 0x0000, ch.data.frames - (32 + ch.tap_frame_count));
         }
         b.write_padding(17);
         // Write tap frames
@@ -177,7 +177,7 @@ impl BitstreamParser {
         if compress {
             b.write_comp_frames(ch, 0x8020, ch.tap_frame_count);
         } else {
-            b.write_frames(ch, 0x8000, 32);
+            b.write_frames(ch, 0x8020, ch.tap_frame_count);
         }
         b.write_padding(17);
         // Write power control
