@@ -311,7 +311,7 @@ impl Fuzzer {
                             &wires::normalize_wire(&self.base, tile_data, from_wire),
                             &wires::normalize_wire(&self.base, tile_data, to_wire),
                             bits,
-                        );
+                        ).unwrap();
 			findings += 1;
                     }
                 }
@@ -369,7 +369,7 @@ impl Fuzzer {
                     // Add the word to the tile data
                     let tile_data = self.base.tile_by_name(tile).unwrap();
                     let tile_db = db.tile_bitdb(&self.base.family, &tile_data.tiletype);
-                    tile_db.add_word(&name, &self.desc, cbits);
+                    tile_db.add_word(&name, &self.desc, cbits).unwrap();
                 }
             }
             FuzzMode::Enum {
@@ -464,7 +464,7 @@ impl Fuzzer {
                                     let tile_db =
                                         db.tile_bitdb(&self.base.family, &tile_data.tiletype);
 
-                                    tile_db.add_enum_option(&name, &option, &self.desc, b);
+                                    tile_db.add_enum_option(&name, &option, &self.desc, b).unwrap();
 
                                     if let Some(relative_tile) = mark_relative_to.clone() {
                                         let ref_tile = self.base.tile_by_name(&relative_tile).unwrap();
@@ -474,7 +474,7 @@ impl Fuzzer {
                                              ref_tile.y as i32 - tile_data.y as i32)
                                         };
 
-                                        tile_db.set_bel_offset(Some(offset.clone()));
+                                        tile_db.set_bel_offset(Some(offset.clone())).unwrap();
                                     };
 
                                 }
@@ -504,7 +504,7 @@ pub fn copy_db(
             for (to_wire, pips) in origin_data.pips.iter() {
                 for p in pips.iter() {
                     if pattern == "" || to_wire.contains(pattern) || p.from_wire.contains(pattern) {
-                        dest_data.add_pip(&p.from_wire, to_wire, p.bits.clone());
+                        dest_data.add_pip(&p.from_wire, to_wire, p.bits.clone()).unwrap();
                     }
                 }
             }
@@ -513,7 +513,7 @@ pub fn copy_db(
             for (name, opts) in origin_data.enums.iter() {
                 if pattern == "" || name.contains(pattern) {
                     for (opt, bits) in opts.options.iter() {
-                        dest_data.add_enum_option(name, opt, &opts.desc, bits.clone());
+                        dest_data.add_enum_option(name, opt, &opts.desc, bits.clone()).unwrap();
                     }
                 }
             }
@@ -521,7 +521,7 @@ pub fn copy_db(
         if mode.contains('W') {
             for (name, data) in origin_data.words.iter() {
                 if pattern == "" || name.contains(pattern) {
-                    dest_data.add_word(name, &data.desc, data.bits.clone());
+                    dest_data.add_word(name, &data.desc, data.bits.clone()).unwrap();
                 }
             }
         }

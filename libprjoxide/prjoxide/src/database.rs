@@ -1,12 +1,14 @@
 use itertools::Itertools;
 use ron::ser::PrettyConfig;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::{env, fmt};
+
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 use log::{debug, info, warn};
+
 // Deserialization of 'devices.json'
 
 macro_rules! emit_bit_change_error {
@@ -14,10 +16,12 @@ macro_rules! emit_bit_change_error {
     // depending on the edition of the caller.
     ($($arg:tt)*) => {
         /* compiler built-in */
+
+        warn!($($arg)*);
         if env::var("PRJOXIDE_ALLOW_BIT_CHANGE").is_ok() {
-            warn!($($arg)*);
+
         } else {
-            panic!($($arg)*);
+            return Err(format!($($arg)*));
         }
     };
 }
@@ -58,6 +62,12 @@ pub struct DeviceData {
 #[derive(Deserialize)]
 pub struct DeviceTilegrid {
     pub tiles: BTreeMap<String, TileData>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct OverlayTiletype {
+    // All of the overlays that combine to make this tiletype
+    pub overlays: BTreeSet<String>
 }
 
 #[derive(Serialize, Deserialize)]
@@ -257,7 +267,7 @@ impl fmt::Debug for ConfigBit {
     }
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct ConfigPipData {
     pub from_wire: String,
     pub bits: BTreeSet<ConfigBit>,
@@ -283,7 +293,7 @@ fn is_false(x: &bool) -> bool {
     !(*x)
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct FixedConnectionData {
     pub from_wire: String,
     #[serde(default)]
@@ -339,6 +349,14 @@ pub struct TileBitsData {
 }
 
 impl TileBitsData {
+    pub fn sort(&mut self) {
+        debug!("Sorting {}", self.tiletype);
+
+        self.db.conns.iter_mut().for_each(|(_,conn)| conn.sort());
+        self.db.pips.iter_mut().for_each(|(_,pip)| pip.sort());
+        self.db.words.iter_mut().for_each(|(_,word)| word.bits.sort());
+    }
+
     pub fn new(tiletype: &str, db: TileBitsDatabase) -> TileBitsData {
         TileBitsData {
             tiletype: tiletype.to_string(),
@@ -347,22 +365,33 @@ impl TileBitsData {
         }
     }
 
-    pub fn merge(&mut self, other_db: TileBitsDatabase) {
-        for (to, pip_data) in other_db.pips.iter() {
-            for from in pip_data.iter() {
-                self.add_pip(&from.from_wire, to, from.bits.clone());
-            }
-        }
+    pub fn merge_configs(&mut self, other_db: &TileBitsDatabase) -> Result<(), String> {
         for (word, word_config) in other_db.words.iter() {
-            self.add_word(word, &*word_config.desc, word_config.bits.clone());
+            self.add_word(word, &*word_config.desc, word_config.bits.clone())?;
         };
         for (enm, enum_config) in other_db.enums.iter() {
             for (option, option_bits) in enum_config.options.iter() {
-                self.add_enum_option(enm, option, &*enum_config.desc, option_bits.clone());
+                self.add_enum_option(enm, option, &*enum_config.desc, option_bits.clone())?;
             }
         }
 
-        for (to, from_wires) in other_db.conns {
+        for external_tile_configs in other_db.tile_configures_external_tiles.iter() {
+            self.set_bel_offset(Some(external_tile_configs.clone()))?;
+        }
+
+        Ok(())
+    }
+
+    pub fn merge(&mut self, other_db: &TileBitsDatabase) -> Result<(), String> {
+        self.merge_configs(other_db)?;
+
+        for (to, pip_data) in other_db.pips.iter() {
+            for from in pip_data.iter() {
+                self.add_pip(&from.from_wire, to, from.bits.clone())?;
+            }
+        }
+
+        for (to, from_wires) in other_db.conns.iter() {
             for from in from_wires {
                 self.add_conn(&*from.from_wire, &*to);
                 if from.bidir {
@@ -371,14 +400,21 @@ impl TileBitsData {
             }
         }
 
-        for external_tile_configs in other_db.tile_configures_external_tiles {
-            self.set_bel_offset(Some(external_tile_configs));
-        }
+        Ok(())
     }
 
-    pub fn add_pip(&mut self, from: &str, to: &str, bits: BTreeSet<ConfigBit>) {
+    pub fn find_pip_data(&self,from: &str, to: &str) -> Option<&ConfigPipData> {
+        for pip_config in self.db.pips.get(to)? {
+            if pip_config.from_wire == from {
+                return Some(pip_config);
+            }
+        }
+        None
+    }
+
+    pub fn add_pip(&mut self, from: &str, to: &str, bits: BTreeSet<ConfigBit>) -> Result<(), String> {
         if !self.db.pips.contains_key(to) {
-            info!("Inserting new pip destination {to}");
+            debug!("Inserting new pip destination {to}");
             self.db.pips.insert(to.to_string(), Vec::new());
         }
         let ac = self.db.pips.get_mut(to).unwrap();
@@ -392,21 +428,23 @@ impl TileBitsData {
 
                     ad.bits = bits;
                     self.dirty = true;
-                    return;
+                    return Ok(());
                 }
 
                 debug!("Pip {from} -> {to} already exists for {}", self.tiletype);
-                return;
+                return Ok(());
             }
         }
         self.dirty = true;
-        info!("Inserting new pip {from} -> {to} for {}", self.tiletype);
+        debug!("Inserting new pip {from} -> {to} for {}", self.tiletype);
         ac.push(ConfigPipData {
             from_wire: from.to_string(),
             bits: bits.clone(),
         });
+
+        Ok(())
     }
-    pub fn add_word(&mut self, name: &str, desc: &str, bits: Vec<BTreeSet<ConfigBit>>) {
+    pub fn add_word(&mut self, name: &str, desc: &str, bits: Vec<BTreeSet<ConfigBit>>) -> Result<(), String> {
         self.dirty = true;
         match self.db.words.get_mut(name) {
             None => {
@@ -441,9 +479,11 @@ impl TileBitsData {
                 }
             }
         }
+
+        Ok(())
     }
 
-    pub fn set_bel_offset(&mut self, bel_relative_location : Option<(String, i32, i32)>) {
+    pub fn set_bel_offset(&mut self, bel_relative_location : Option<(String, i32, i32)>) -> Result<(), String> {
         if !self.db.tile_configures_external_tiles.is_empty() &&
             self.db.tile_configures_external_tiles.iter().next() != bel_relative_location.as_ref() {
             emit_bit_change_error!(
@@ -457,6 +497,8 @@ impl TileBitsData {
             |loc| { self.db.tile_configures_external_tiles.insert(loc.clone()); }
         );
         self.dirty = true;
+
+        Ok(())
     }
     pub fn add_enum_option(
         &mut self,
@@ -464,7 +506,7 @@ impl TileBitsData {
         option: &str,
         desc: &str,
         bits: BTreeSet<ConfigBit>
-    ) {
+    ) -> Result<(), String> {
         if !self.db.enums.contains_key(name) {
             self.db.enums.insert(
                 name.to_string(),
@@ -496,6 +538,8 @@ impl TileBitsData {
                 self.dirty = true;
             }
         }
+
+        Ok(())
     }
     pub fn add_conn(&mut self, from: &str, to: &str) {
         if !self.db.conns.contains_key(to) {
@@ -522,18 +566,30 @@ impl TileBitsData {
     }
 }
 
+type FamilyName = String;
+type DeviceName = String;
+type DeviceSpecifier = (FamilyName, DeviceName);
+type TileName = String;
+
+type TileTypeName = String;
+
 pub struct Database {
     root: Option<String>,
     builtin: Option<include_dir::Dir<'static>>,
     devices: DevicesDatabase,
-    tilegrids: HashMap<(String, String), DeviceTilegrid>,
-    baseaddrs: HashMap<(String, String), DeviceBaseAddrs>,
-    globals: HashMap<(String, String), DeviceGlobalsData>,
-    iodbs: HashMap<(String, String), DeviceIOData>,
-    interconn_tmg: HashMap<(String, String), InterconnectTimingData>,
-    cell_tmg: HashMap<(String, String), CellTimingData>,
-    tilebits: HashMap<(String, String), TileBitsData>,
-    ipbits: HashMap<(String, String), TileBitsData>,
+    tilegrids: HashMap<DeviceSpecifier, DeviceTilegrid>,
+    baseaddrs: HashMap<DeviceSpecifier, DeviceBaseAddrs>,
+    globals: HashMap<DeviceSpecifier, DeviceGlobalsData>,
+    iodbs: HashMap<DeviceSpecifier, DeviceIOData>,
+    interconn_tmg: HashMap<DeviceSpecifier, InterconnectTimingData>,
+    cell_tmg: HashMap<DeviceSpecifier, CellTimingData>,
+
+    tilebits: HashMap<(FamilyName, TileTypeName), TileBitsData>,
+    ipbits: HashMap<(FamilyName, TileTypeName), TileBitsData>,
+
+    overlay_based_devices:  HashSet<DeviceSpecifier>,
+    _overlays: Option<HashMap<DeviceSpecifier, BTreeMap<TileTypeName, OverlayTiletype>>>,
+    overlay_tiletypes: HashMap<DeviceSpecifier, BTreeMap<TileName, TileTypeName>>,
 }
 
 impl Database {
@@ -544,10 +600,24 @@ impl Database {
             .unwrap()
             .read_to_string(&mut devices_json_buf)
             .unwrap();
+
+        let devices : DevicesDatabase = serde_json::from_str(&devices_json_buf).unwrap();
+        let mut overlay_based_devices = HashSet::new();
+
+        if !env::var("PRJOXIDE_DISABLE_OVERLAYS").is_ok() {
+            for (family, family_data) in devices.families.iter() {
+                for (device, _) in family_data.devices.iter() {
+                    if Path::new(format!("{root}/{family}/{device}/overlays.json").as_str()).exists() {
+                        overlay_based_devices.insert((family.clone(), device.clone()));
+                    }
+                }
+            }
+        }
+
         Database {
             root: Some(root.to_string()),
             builtin: None,
-            devices: serde_json::from_str(&devices_json_buf).unwrap(),
+            devices: devices,
             tilegrids: HashMap::new(),
             baseaddrs: HashMap::new(),
             globals: HashMap::new(),
@@ -556,14 +626,28 @@ impl Database {
             cell_tmg: HashMap::new(),
             tilebits: HashMap::new(),
             ipbits: HashMap::new(),
+            overlay_based_devices,
+            _overlays: None,
+            overlay_tiletypes: HashMap::new(),
         }
     }
     pub fn new_builtin(data: include_dir::Dir<'static>) -> Database {
         let devices_json_buf = data.get_file("devices.json").unwrap().contents_utf8().unwrap();
+
+        let devices : DevicesDatabase = serde_json::from_str(&devices_json_buf).unwrap();
+        let mut overlay_based_devices = HashSet::new();
+        for (family, family_data) in devices.families.iter() {
+            for (device, _) in family_data.devices.iter() {
+                if data.get_file(format!("{family}/{device}/overlays.json").as_str()).is_some() {
+                    overlay_based_devices.insert((family.clone(), device.clone()));
+                }
+            }
+        }
+
         Database {
             root: None,
             builtin: Some(data),
-            devices: serde_json::from_str(&devices_json_buf).unwrap(),
+            devices: devices,
             tilegrids: HashMap::new(),
             baseaddrs: HashMap::new(),
             globals: HashMap::new(),
@@ -572,6 +656,9 @@ impl Database {
             cell_tmg: HashMap::new(),
             tilebits: HashMap::new(),
             ipbits: HashMap::new(),
+            overlay_based_devices,
+            _overlays: None,
+            overlay_tiletypes: HashMap::new(),
         }
     }
     // Check if a file exists
@@ -621,12 +708,89 @@ impl Database {
         }
         None
     }
+
+
+    pub fn device_overlay_tiletypes(&mut self, family: &str, device: &str) -> Result<&BTreeMap<TileName, TileTypeName>, String> {
+        let key = (family.to_string(), device.to_string());
+        if !self.overlay_tiletypes.contains_key(&key) {
+            let json_buf = self.read_file(&format!("{}/{}/overlays.json", family, device));
+
+            let root: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> =
+                serde_json::from_str(&json_buf)
+                    .map_err(|e| format!("Failed to parse overlays.json: {}", e))?;
+
+            let tiletypes = root.get("tiletypes")
+                .ok_or("missing tiletypes")?;
+
+            let tiletype_lookup = tiletypes.iter()
+                .flat_map(|(k, set)| set.iter().map(move |v| (v.clone(), k.clone())))
+                .try_fold(BTreeMap::new(), |mut acc, (v, k)| {
+                    match acc.insert(v.clone(), k.clone()) {
+                        None => Ok(acc),
+                        Some(prev) => Err(format!(
+                            "Collision: '{}' belongs to both '{}' and '{}'",
+                            v, prev, k
+                        )),
+                    }
+                })?;
+
+            self.overlay_tiletypes.insert(key.clone(), tiletype_lookup);
+        }
+        self.overlay_tiletypes.get(&key).ok_or(format!("Could not find overlay tile types for {family} {device}"))
+    }
+    pub fn overlays(&mut self) -> &HashMap<DeviceSpecifier, BTreeMap<TileTypeName, OverlayTiletype>> {
+        if self._overlays.is_none() {
+            let mut overlays = HashMap::new();
+
+            for (family, family_data) in self.devices.families.iter() {
+                for (device, _) in family_data.devices.iter() {
+
+                    if self.file_exists(&format!("{}/{}/overlays.json", family, device)) {
+                        let json_buf = self.read_file(&format!("{}/{}/overlays.json", family, device));
+
+                        let root: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> =
+                            serde_json::from_str(&json_buf)
+                                .map_err(|e| format!("Failed to parse overlays.json: {}", e)).unwrap();
+
+                        let overlay_tiletypes = root.get("overlays")
+                            .ok_or(format!("missing overlays in {device}")).unwrap();
+
+                        let device_overlays = overlay_tiletypes.iter().map(|(name, contents)| {
+                            (name.clone(), OverlayTiletype {
+                                overlays: contents.clone()
+                            })
+                        }).collect();
+
+                        overlays.insert((family.clone(), device.clone()), device_overlays);
+                    }
+                }
+            }
+
+            self._overlays = Some(overlays);
+        }
+
+        &self._overlays.as_ref().unwrap()
+    }
+
     // Tilegrid for a device by family and name
     pub fn device_tilegrid(&mut self, family: &str, device: &str) -> &DeviceTilegrid {
         let key = (family.to_string(), device.to_string());
         if !self.tilegrids.contains_key(&key) {
             let tg_json_buf = self.read_file(&format!("{}/{}/tilegrid.json", family, device));
-            let tg = serde_json::from_str(&tg_json_buf).unwrap();
+            let mut tg : DeviceTilegrid = serde_json::from_str(&tg_json_buf).unwrap();
+
+            if self.overlay_based_devices.contains(&key) {
+
+                let device_overlay = self.device_overlay_tiletypes(family, device).unwrap();
+                for (tile, tile_data) in tg.tiles.iter_mut() {
+                    if let Some(tile_type_name) = device_overlay.get(tile) {
+                        tile_data.tiletype = tile_type_name.clone();
+                    } else {
+                        warn!("Could not find {tile} in overlays listing {device}");
+                    }
+                }
+            }
+
             self.tilegrids.insert(key.clone(), tg);
         }
         self.tilegrids.get(&key).unwrap()
@@ -681,28 +845,95 @@ impl Database {
         }
         self.cell_tmg.get(&key).unwrap()
     }
+    pub fn tile_bitdb_from_overlays(&mut self, family: &str, tiletype: &str, overlay: &OverlayTiletype) -> Result<TileBitsData, String> {
+        let tile_bits_db = TileBitsDatabase {
+            pips: BTreeMap::new(),
+            words: BTreeMap::new(),
+            enums: BTreeMap::new(),
+            conns: BTreeMap::new(),
+            always_on: BTreeSet::new(),
+            tile_configures_external_tiles : BTreeSet::new(),
+        };
+        let mut tile_bits = TileBitsData::new(tiletype, tile_bits_db);
+        info!("Merge {tiletype} {:?}", overlay.overlays);
+
+        let overlay_members : Vec<String> = overlay.overlays.clone().into_iter()
+            .sorted_by(|x, y| {
+                (y.starts_with("overlay"), y).cmp(&(x.starts_with("overlay"), x))
+            }).collect();
+
+        for layer in overlay_members {
+            info!("Merging {layer} into {tiletype}");
+
+            let overlay_tiletypes = self.overlay_tiletypes.clone();
+            let overlay_bits = self.tile_bitdb(family, layer.as_str());
+
+            if !layer.starts_with("overlay") {
+                for (to, from_wires) in &overlay_bits.db.pips {
+                    for from_data in from_wires {
+                        let from_wire = &from_data.from_wire;
+
+                        if tile_bits.find_pip_data(from_wire, to).is_none() {
+                            let indicated_tiles : Vec<_> = overlay_tiletypes.iter().flat_map(|(_, tilemaps)| {
+                                    tilemaps.iter().filter(move |(_, tiletypename)| {
+                                        tiletypename == &tiletype
+                                    }).map(|x| x.0.clone())
+                                }).collect();
+                            warn!("Ignoring PIP data {from_wire} -> {to} from {layer} for {tiletype}. Used in {indicated_tiles:?}")
+                        }
+                    }
+                }
+                tile_bits.merge_configs(&overlay_bits.db)?;
+            } else {
+                tile_bits.merge(&overlay_bits.db)?;
+            }
+        }
+        Ok(tile_bits)
+    }
     // Bit database for a tile by family and tile type
     pub fn tile_bitdb(&mut self, family: &str, tiletype: &str) -> &mut TileBitsData {
         let key = (family.to_string(), tiletype.to_string());
         if !self.tilebits.contains_key(&key) {
-            // read the whole file
-            let filename = format!("{}/tiletypes/{}.ron", family, tiletype);
-            let tb = if self.file_exists(&filename) {
-                let tt_ron_buf = self.read_file(&filename);
-                ron::de::from_str(&tt_ron_buf).unwrap()
-            } else {
-                TileBitsDatabase {
-                    pips: BTreeMap::new(),
-                    words: BTreeMap::new(),
-                    enums: BTreeMap::new(),
-                    conns: BTreeMap::new(),
-                    always_on: BTreeSet::new(),
-                    tile_configures_external_tiles : BTreeSet::new(),
+            let overlay = self.overlays().iter()
+                .find(|((overlay_family, _), overlay)| {
+                    family == overlay_family && overlay.contains_key(tiletype)
+                })
+                .map(|(_, overlay)| overlay.get(tiletype).unwrap().clone()).map(|overlay| overlay.clone());
+
+            let tile_bits = match overlay {
+                Some(overlay) => {
+                    self.tile_bitdb_from_overlays(family, tiletype, &overlay).unwrap()
+                }
+                None => {
+                    let is_overlay = tiletype.starts_with("overlay/");
+                    let filename = if is_overlay {
+                        format!("{}/overlays/{}.ron", family, tiletype.replace("overlay/", ""))
+                    } else {
+                        format!("{}/tiletypes/{}.ron", family, tiletype)
+                    };
+                    let tb = if self.file_exists(&filename) {
+                        // read the whole file
+                        let tt_ron_buf = self.read_file(&filename);
+                        ron::de::from_str(&tt_ron_buf).unwrap()
+                    } else {
+                        debug!("No tile database found for {tiletype} at {filename} -- using empty db.");
+
+                        TileBitsDatabase {
+                            pips: BTreeMap::new(),
+                            words: BTreeMap::new(),
+                            enums: BTreeMap::new(),
+                            conns: BTreeMap::new(),
+                            always_on: BTreeSet::new(),
+                            tile_configures_external_tiles : BTreeSet::new(),
+                        }
+                    };
+                    TileBitsData::new(tiletype, tb)
                 }
             };
-            self.tilebits
-                .insert(key.clone(), TileBitsData::new(tiletype, tb));
+
+            self.tilebits.insert(key.clone(), tile_bits);
         }
+
         self.tilebits.get_mut(&key).unwrap()
     }
     // Bit database for a tile by family and tile type
@@ -729,6 +960,17 @@ impl Database {
         }
         self.ipbits.get_mut(&key).unwrap()
     }
+
+    pub fn reformat(&mut self) {
+        debug!("Reformatting {:?}", self.tilebits.len());
+
+        for (_, tilebits) in self.tilebits.iter_mut() {
+            tilebits.dirty = true;
+            tilebits.sort();
+        }
+
+        self.flush();
+    }
     // Flush tile bit database changes to disk
     pub fn flush(&mut self) {
         for kv in self.tilebits.iter_mut() {
@@ -744,10 +986,23 @@ impl Database {
                 enumerate_arrays: false,
                 separate_tuple_members: false,
             };
+
+            tilebits.sort();
+            let is_overlay = tiletype.starts_with("overlay");
+
+            let (dir_name, file_name) = if is_overlay {
+                ("overlays", tiletype.replace("overlay", ""))
+            } else {
+                ("tiletypes", tiletype.clone())
+            };
+
+            debug!("Writing {}/{}/{}/{}.ron",
+                self.root.as_ref().unwrap(), family, dir_name, file_name);
+
             let tt_ron_buf = ron::ser::to_string_pretty(&tilebits.db, pretty).unwrap();
             File::create(format!(
-                "{}/{}/tiletypes/{}.ron",
-                self.root.as_ref().unwrap(), family, tiletype
+                "{}/{}/{}/{}.ron",
+                self.root.as_ref().unwrap(), family, dir_name, file_name
             ))
             .unwrap()
             .write_all(tt_ron_buf.as_bytes())
@@ -763,6 +1018,8 @@ impl Database {
             // Check invariants for IP type configs
             assert!(ipbits.db.pips.is_empty());
             assert!(ipbits.db.conns.is_empty());
+
+            ipbits.sort();
 
             let pretty = PrettyConfig {
                 depth_limit: 5,

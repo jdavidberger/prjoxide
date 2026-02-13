@@ -143,7 +143,7 @@ impl IPFuzzer {
                                     .collect();
                                 // Add the enum to the tile data
                                 let iptype_db = db.ip_bitdb(&self.base.family, &self.iptype);
-                                iptype_db.add_enum_option(name, &option, &self.desc, b);
+                                iptype_db.add_enum_option(name, &option, &self.desc, b).unwrap();
                             }
                         }
                     }
@@ -183,7 +183,7 @@ impl IPFuzzer {
                     used_bits.append(&mut is.clone());
                 }
                 let iptype_db = db.ip_bitdb(&self.base.family, &self.iptype);
-                iptype_db.add_word(&name, &self.desc, cbits);
+                iptype_db.add_word(&name, &self.desc, cbits).unwrap();
             }
         }
         db.flush();

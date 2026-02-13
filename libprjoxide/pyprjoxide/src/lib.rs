@@ -1,13 +1,7 @@
-use pyo3::prelude::*;
-use pyo3::types::{PyList, PySet};
-use pyo3::wrap_pyfunction;
-
-use std::fs::File;
-use std::io::*;
-use pyo3_log::{Caching, Logger};
 use prjoxide::bitstream;
 use prjoxide::chip;
 use prjoxide::database;
+use prjoxide::database::ConfigBit;
 use prjoxide::database_html;
 use prjoxide::docs;
 use prjoxide::fuzz;
@@ -16,27 +10,83 @@ use prjoxide::nodecheck;
 use prjoxide::pip_classes;
 use prjoxide::sites;
 use prjoxide::wires;
-
+use pyo3::exceptions::PyException;
+use pyo3::prelude::*;
+use pyo3::types::{PyList, PySet};
+use pyo3::wrap_pyfunction;
+use std::collections::BTreeSet;
+use std::fs::File;
+use std::io::*;
 
 #[pyclass]
 struct Database {
-    db: database::Database,
+    db: database::Database
 }
 
 #[pymethods]
 impl Database {
     #[new]
-    pub fn __new__(root: &str) -> Self {
-        Database {
-            db: database::Database::new(root),
-        }
+    pub fn __new__(root: &str, py: Python) -> Self {
+        py.allow_threads(|| {
+            Database {
+                db: database::Database::new(root)
+            }
+        })
     }
     pub fn add_conn(&mut self, family: &str, tiletype: &str, from: &str, to: &str) {
         self.db.tile_bitdb(family, tiletype).add_conn(from, to);
     }
+    pub fn add_conns(&mut self, family: &str, tiletype: &str, conns: Vec<(String, String)>, py: Python) {
+        py.allow_threads(|| {
+            let db = self.db.tile_bitdb(family, tiletype);
+            conns.iter().for_each(|(frm, to)| {
+                db.add_conn(frm, to);
+            });
+        });
+    }
 
-    pub fn flush(&mut self) {
-        self.db.flush();
+    pub fn load_tiletype(&mut self, family: &str, tiletype: &str) {
+        self.db.tile_bitdb(family, tiletype);
+    }
+    pub fn flush(&mut self, py: Python) {
+        py.allow_threads(|| {
+            self.db.flush();
+        });
+    }
+
+    pub fn add_pip(&mut self, base: &Chip, tile: &str, from_wire: &str, to_wire: &str, bits : BTreeSet<(usize, usize, bool)>, py: Python) -> PyResult<()> {
+        py.allow_threads(|| {
+            let tile_spec : Vec<&str> = tile.split(",").collect();
+            let tile_name = tile_spec[0];
+            let tile_data = base.c.tile_by_name(tile_name).unwrap();
+            let tile_type_or_overlay = if tile_spec.len() == 1 {
+                &tile_data.tiletype
+            } else {
+                tile_spec[1]
+            };
+            let norm_from_wire = wires::normalize_wire(&base.c, tile_data, from_wire);
+            let norm_to_wire = wires::normalize_wire(&base.c, tile_data, to_wire);
+
+            let tile_db = self.db.tile_bitdb(base.c.family.as_str(), tile_type_or_overlay);
+
+            tile_db.add_pip(
+                &norm_from_wire,
+                &norm_to_wire,
+                bits.iter().map(|x| ConfigBit {
+                    frame: x.0,
+                    bit: x.1,
+                    invert: !x.2
+                }).collect(),
+            ).map_err(|e| {
+                PyException::new_err(e)
+            })?;
+
+            Ok(())
+        })
+    }
+
+    pub fn reformat(&mut self) {
+        self.db.reformat();
     }
 }
 
@@ -87,27 +137,33 @@ impl Fuzzer {
         ignore_tiles: &PySet,
         full_mux: bool,
         skip_fixed: bool,
+        py: Python
     ) -> Fuzzer {
-        let base_chip = bitstream::BitstreamParser::parse_file(&mut db.db, base_bitfile).unwrap();
+        let rust_tiles = &fuzz_tiles
+            .iter()
+            .map(|x| x.extract::<String>().unwrap())
+            .collect();
+        let rust_ignore_tiles = &ignore_tiles
+            .iter()
+            .map(|x| x.extract::<String>().unwrap())
+            .collect();
 
-        Fuzzer {
-            fz: fuzz::Fuzzer::init_pip_fuzzer(
-                &base_chip,
-                &fuzz_tiles
-                    .iter()
-                    .map(|x| x.extract::<String>().unwrap())
-                    .collect(),
-                to_wire,
-                fixed_conn_tile,
-                &ignore_tiles
-                    .iter()
-                    .map(|x| x.extract::<String>().unwrap())
-                    .collect(),
-                full_mux,
-                skip_fixed,
-            ),
-            name: to_wire.to_string()
-        }
+        py.allow_threads(|| {
+            let base_chip = bitstream::BitstreamParser::parse_file(&mut db.db, base_bitfile).unwrap();
+
+            Fuzzer {
+                fz: fuzz::Fuzzer::init_pip_fuzzer(
+                    &base_chip,
+                    rust_tiles,
+                    to_wire,
+                    fixed_conn_tile,
+                    rust_ignore_tiles,
+                    full_mux,
+                    skip_fixed,
+                ),
+                name: to_wire.to_string()
+            }
+        })
     }
 
     #[staticmethod]
@@ -143,9 +199,16 @@ impl Fuzzer {
     fn add_word_sample(&mut self, db: &mut Database, index: usize, base_bitfile: &str) {
         self.fz.add_word_sample(&mut db.db, index, base_bitfile);
     }
-
     fn add_pip_sample(&mut self, db: &mut Database, from_wire: &str, base_bitfile: &str) {
         self.fz.add_pip_sample(&mut db.db, from_wire, base_bitfile);
+    }
+
+    fn add_pip_samples(&mut self, db: &mut Database, samples: Vec<(String, String)>, py: Python) {
+        py.allow_threads(|| {
+            samples.iter().for_each(|(from_wire, base_bitfile)| {
+                self.fz.add_pip_sample(&mut db.db, from_wire, base_bitfile);
+            });
+        });
     }
 
     fn add_pip_sample_delta(&mut self, from_wire: &str, delta: chip::ChipDelta) {
@@ -160,8 +223,10 @@ impl Fuzzer {
         self.fz.add_enum_sample(&mut db.db, option, base_bitfile);
     }
 
-    fn solve(&mut self, db: &mut Database) {
-        self.fz.solve(&mut db.db);
+    fn solve(&mut self, db: &mut Database, py: Python) {
+        py.allow_threads(|| {
+            self.fz.solve(&mut db.db);
+        });
     }
 
     fn serialize_deltas(&mut self, filename: &str) {
@@ -294,16 +359,20 @@ struct Chip {
 #[pymethods]
 impl Chip {
     #[new]
-    pub fn __new__(db: &mut Database, name: &str) -> Self {
-        Chip {
-            c: chip::Chip::from_name(&mut db.db, name),
-        }
+    pub fn __new__(db: &mut Database, name: &str, py: Python) -> Self {
+        py.allow_threads(|| {
+            Chip {
+                c: chip::Chip::from_name(&mut db.db, name),
+            }
+        })
     }
 
     #[staticmethod]
-    pub fn from_bitstream(db: &mut Database, filename: &str) -> Chip {
-        let chip = bitstream::BitstreamParser::parse_file(&mut db.db, filename).unwrap();
-        Chip { c: chip }
+    pub fn from_bitstream(db: &mut Database, filename: &str,  py: Python) -> Chip {
+        py.allow_threads(|| {
+            let chip = bitstream::BitstreamParser::parse_file(&mut db.db, filename).unwrap();
+            Chip { c: chip }
+        })
     }
 
     fn normalize_wire(&mut self, tile: &str, wire: &str) -> String {
@@ -314,9 +383,17 @@ impl Chip {
         self.c.ipconfig.iter().map(|(a, d)| (*a, *d)).collect()
     }
 
-    fn delta(&self, db: &mut Database, new_bitstream: &str) -> PyResult<chip::ChipDelta> {
-        let parsed_bitstream = bitstream::BitstreamParser::parse_file(&mut db.db, new_bitstream).unwrap();
-        Ok(parsed_bitstream.delta(&self.c))
+    fn delta_with_ipvalues(&self, db: &mut Database, new_bitstream: &str, py: Python) -> PyResult<(chip::ChipDelta, Vec<(u32, u8)>)> {
+        py.allow_threads(|| {
+            let parsed_bitstream = bitstream::BitstreamParser::parse_file(&mut db.db, new_bitstream).unwrap();
+            Ok((parsed_bitstream.delta(&self.c), parsed_bitstream.ipconfig.iter().map(|(a, d)| (*a, *d)).collect()))
+        })
+    }
+    fn delta(&self, db: &mut Database, new_bitstream: &str, py: Python) -> PyResult<chip::ChipDelta> {
+        py.allow_threads(|| {
+            let parsed_bitstream = bitstream::BitstreamParser::parse_file(&mut db.db, new_bitstream).unwrap();
+            Ok(parsed_bitstream.delta(&self.c))
+        })
     }
 }
 
@@ -392,9 +469,9 @@ fn classify_pip(src_x: i32, src_y: i32, src_name: &str, dst_x: i32, dst_y: i32, 
 }
 
 #[pymodule]
-fn libpyprjoxide(py: Python, m: &PyModule) -> PyResult<()> {
+fn libpyprjoxide(_py: Python, m: &PyModule) -> PyResult<()> {
     pyo3_log::init();
-    
+
     m.add_wrapped(wrap_pyfunction!(parse_bitstream))?;
     m.add_wrapped(wrap_pyfunction!(write_tilegrid_html))?;
     m.add_wrapped(wrap_pyfunction!(write_region_html))?;

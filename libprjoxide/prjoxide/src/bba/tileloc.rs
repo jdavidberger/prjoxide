@@ -12,6 +12,7 @@ use itertools::Itertools;
 use std::collections::{BTreeSet, HashMap};
 use std::convert::TryInto;
 use std::iter::FromIterator;
+use log::warn;
 use regex::Regex;
 use crate::bba::tiletype::Neighbour::RelXY;
 
@@ -199,7 +200,7 @@ impl LocationGrid {
                     match (n.clone(), nt) {
                         (RelXY {rel_x: _, rel_y: _}, None) => {}
                         (n, None) => {
-                            println!("Could not resolve the neighbor {n:?} at {x} {y} for {tiletypes:?}")
+                            warn!("Could not resolve the neighbor {n:?} at {x} {y} for {tiletypes:?}")
                         }
                         _ => {}
                     }
