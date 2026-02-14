@@ -13,7 +13,7 @@ import nonrouting
 import primitives
 import radiant
 import tiles
-from fuzzconfig import FuzzConfig, get_db
+from fuzzconfig import FuzzConfig
 from interconnect import fuzz_interconnect_sinks
 
 import database
@@ -300,10 +300,6 @@ async def run_for_device(device, executor = None):
     sites = database.get_sites(device)
     sites_items = [(k,v) for k,v in sorted(sites.items()) if v["type"] not in ["CIBTEST", "SLICE"]]
 
-    sitetypes = {v["type"] for s,v in sites_items}
-
-    await asyncio.wrap_future(lapie.get_node_data(device, sitetypes, True, executor))
-
     driving_tiles_futures = []
     async with asyncio.TaskGroup() as tg:
         for site, site_info in sites_items:
@@ -342,34 +338,28 @@ async def run_for_device(device, executor = None):
             mapped_sites.add(site_key)
             tg.create_task(per_site(site, site_info, (driving_tiles, site_tiles, ip_values), executor))
 
+async def FuzzAsync(executor):
+    families = database.get_devices()["families"]
+    devices = sorted([
+        device
+        for family in families
+        for device in families[family]["devices"]
+        if fuzzconfig.should_fuzz_platform(device)
+    ])
 
-def main():
-    async def run_for_devices(executor):
-        get_db()
+    all_sites = set([site_info["type"]
+                     for device in devices
+                     if device.startswith("LIFCL")
+                     for site, site_info in database.get_sites(device).items()
+                     ])
 
-        families = database.get_devices()["families"]
-        devices = sorted([
-            device
-            for family in families
-            for device in families[family]["devices"]
-            if fuzzconfig.should_fuzz_platform(device)
-        ])
+    if len(sys.argv) > 1 and sys.argv[1] not in all_sites:
+        logging.warning(f"Site filter doesn't match any known sites")
+        logging.info(sorted(all_sites))
 
-        all_sites = set([site_info["type"]
-                         for device in devices
-                         if device.startswith("LIFCL")
-                         for site, site_info in database.get_sites(device).items()
-                         ])
+        return []
 
-        if len(sys.argv) > 1 and sys.argv[1] not in all_sites:
-            logging.warning(f"Site filter doesn't match any known sites")
-            logging.info(sorted(all_sites))
-
-            return []
-
-        return await asyncio.gather(*[ run_for_device(device, executor) for device in devices ])
-
-    fuzzloops.FuzzerAsyncMain(run_for_devices)
+    return await asyncio.gather(*[ run_for_device(device, executor) for device in devices ])
 
 if __name__ == "__main__":
-    main()
+    fuzzloops.FuzzerAsyncMain(FuzzAsync)

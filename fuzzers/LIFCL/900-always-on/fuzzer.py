@@ -12,11 +12,11 @@ cfgs = [
 ]
 
 def main():
-    db = fuzzconfig.get_db()
-	for cfg in cfgs:
-	    cfg.setup()
-	    empty = cfg.build_design(cfg.sv, {})
-	    libpyprjoxide.add_always_on_bits(fuzzconfig.db, empty)
+    with fuzzconfig.db_lock() as db:
+        for cfg in cfgs:
+            cfg.setup()
+            empty = cfg.build_design(cfg.sv, {})
+            libpyprjoxide.add_always_on_bits(db, empty)
 
 if __name__ == "__main__":
     main()
