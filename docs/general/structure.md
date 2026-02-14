@@ -38,12 +38,35 @@ Nodes also have aliases. The typical reason for this is that nodes can span mult
 name for that node. Only the primary name associated with the node is directly queryable, so there is no robust way in 
 general to determine every node that is associated with a given tile.
 
+Generally -- although not universally -- a pip's config is located at the destination node's tile of the PIP. 
+
 ### Node Naming
 
 Nodes have a semantically meaningful structure to their naming. They are all prefixed with `R<r>C<c>_` which gives a hint
 to it's location; although nodes can span multiple tiles.
 
-After that there are the following naming conventions:
+#### J.* 
+
+These describe nodes local to the tile and often tie in to pins
+
+#### [HV]0(D)[NEWS]0[C]0[S]
+
+These describe horizontal or vertical wires that cross (D+1) tiles in N/E/W/S direction starting from where S is 0. There
+can be multiple channels of these nodes per a given wire denoted with C. 
+
+Special names and configuration is given when these nodes run into the edge of the chip. These nodes all have aliases 
+that show what they branch across. 
+
+The 'real' name for these nodes correspond to the middle position. The tile that typically configures them is the one in
+the zero slot. 
+
+For LIFCL-33U:
+
+- R4C14:PLC configures R2C14_V06N0002: ['R0C14_A06N0003', 'R1C14_V06N0003', 'R2C14_V06N0002', 'R3C14_V06N0001', 'R4C14_V06N0000']
+- R5C14:PLC configures 'R8C14_V06S0003': ['R10C14_V06S0005', 'R11C14_V06S0006', 'R5C14_V06S0000', 'R6C14_V06S0001', 'R7C14_V06S0002', 'R8C14_V06S0003', 'R9C14_V06S0004']
+- R11C10:PLC configures R11C13_H06E0203: ['R11C10_H06E0200', 'R11C11_H06E0201', 'R11C12_H06E0202', 'R11C13_H06E0203', 'R11C14_H06E0204', 'R11C15_H06E0205', 'R11C16_H06E0206']
+- R11C16:PLC configures R11C13_H06W0203: ['R11C10_H06W0206', 'R11C11_H06W0205', 'R11C12_H06W0204', 'R11C13_H06W0203', 'R11C14_H06W0202', 'R11C15_H06W0201', 'R11C16_H06W0200']
+- CIB_R1C14:CIB_T configures 'R4C14_V06S0003': ['R1C14_V06S0000', 'R2C14_V06S0001', 'R3C14_V06S0002', 'R4C14_V06S0003', 'R5C14_V06S0004', 'R6C14_V06S0005', 'R7C14_V06S0006']
 
 ## Tile types
 

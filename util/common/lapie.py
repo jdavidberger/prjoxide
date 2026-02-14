@@ -1,11 +1,14 @@
 """
 Python wrapper for `lapie`
 """
+import asyncio
 import hashlib
+import itertools
 import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -52,6 +55,7 @@ def run(commands, workdir=None, stdout=None):
             f.write(c + '\n')
     env = os.environ.copy()
     env[dev_enable_name] = "1"
+    env["LSC_SHOW_INTERNAL_ERROR"] = "1"
 
     result_struct = run_bash_script(env, rcmd_path, tcltool, scriptfile, cwd=workdir, stdout=stdout)
 
@@ -95,7 +99,7 @@ class PipInfo:
         self.is_bidi = is_bidi
        
     def __repr__(self):
-        return str((self.from_wire, self.to_wire, self.flags, self.buffertype, self.is_bidi))
+        return str((self.from_wire, self.to_wire))
 
 class PinInfo:
     def __init__(self, site, pin, wire, pindir):
@@ -214,7 +218,7 @@ def parse_sites(rpt):
 
     return sites
 
-@cachecontrol.cache_fn()
+@cache
 def get_full_node_list(udb):
     workdir = f"/tmp/prjoxide_node_data/{udb}"
     nodefile = path.join(workdir, "full_nodes.txt")
@@ -227,7 +231,8 @@ def get_full_node_list(udb):
             udb = config.udb
         run_with_udb(udb, [f'dev_list_node_by_name -file {nodefile}'])
     with open(nodefile, 'r') as nf:
-        return [line.split(":")[-1].strip() for line in nf.read().split("\n")]
+        return {res for line in nf.read().split("\n")
+                if len(res:=line.split(":")[-1].strip()) != 0 }
 
 @cache
 def _get_list_arc(device):
@@ -271,12 +276,32 @@ def get_jump_wires(device):
 
     return jmp
 
+@cache
+def get_jump_wires_lookup(device):
+    rtn = defaultdict(set)
+    for jmp in get_jump_wires(device):
+        rtn[jmp[0]].add(jmp)
+        rtn[jmp[1]].add(jmp)
+    return rtn
+
 def get_jump_wires_by_nodes(device, nodes):
-    return set([
-        (frm_wire, to_wire)
-        for (frm_wire, to_wire) in get_jump_wires(device)
-        if frm_wire in nodes or to_wire in nodes
-    ])
+    nodes = set(nodes)
+    lu = get_jump_wires_lookup(device)
+
+    raw_set = set()
+    for n in nodes:
+        raw_set = raw_set | lu[n]
+
+    # Most of the things are connections; but sometimes there are multi-source connections. Filter those out.
+    raw_dict = defaultdict(list)
+    for (from_wire, to_wire) in raw_set:
+        raw_dict[to_wire].append(from_wire)
+
+    return {
+        (from_wires[0], to_wire)
+        for (to_wire, from_wires) in raw_dict.items()
+        if len(from_wires) == 1
+    }
 
 def _get_node_data(udb, nodes):
     regex = False
@@ -286,34 +311,30 @@ def _get_node_data(udb, nodes):
     nodelist = "[list {}]".format(" ".join(nodes))
 
     logging.info(f"Querying for {len(nodes)} nodes {nodes[:10]}")
-    key_input = "\n".join([radiant_version, udb, f"regex: {regex}", ''] + nodes)
-    key = hashlib.md5(key_input.encode('utf-8')).hexdigest()
-    key_path = f"/tmp/prjoxide_node_data/{key}"
-    os.makedirs("/tmp/prjoxide_node_data", exist_ok=True)
 
-    if os.path.exists(key_path):
-        logging.debug(f"Nodefile found at {key_path}")
-        shutil.copyfile(key_path, nodefile)
-    else:
-        if not udb.endswith(".udb"):
-            device = udb
-            udb = f"/tmp/prjoxide_node_data/{device}.udb"
-            if not os.path.exists(udb):
-                config = fuzzconfig.FuzzConfig(device, f"extract-site-info-{device}", [])
-                config.setup()
-                shutil.copyfile(config.udb, udb)
+    if not udb.endswith(".udb"):
+        device = udb
+        udb = f"/tmp/prjoxide_node_data/{device}.udb"
+        if not os.path.exists(udb):
+            config = fuzzconfig.FuzzConfig(device, f"extract-site-info-{device}", [])
+            config.setup()
+            shutil.copyfile(config.udb, udb)
 
-        re_slug = "-re " if regex else ""
-        run_with_udb(udb, [f'dev_report_node -file {nodefile} [{get_nodes} {re_slug}{nodelist}]'], stdout = subprocess.DEVNULL)
-        shutil.copyfile(nodefile, key_path)
-        with open(key_path + ".input", 'w') as f:
-            f.write(key_input)
-        logging.debug(f"Nodefile cached at {key_path}")
+    re_slug = "-re " if regex else ""
+    run_with_udb(udb, [f'dev_report_node -file {nodefile} [{get_nodes} {re_slug}{nodelist}]'], stdout = subprocess.DEVNULL)
 
     with open(nodefile, 'r') as nf:
         return parse_node_report(nf.read(), nodes)
 
-def get_node_data(udb, nodes, regex=False, executor = None):
+async def get_pip_data(device, nodes, filter_type = None):
+    from nodes_database import NodesDatabase
+    # Make sure we have full db for these entries
+    await asyncio.to_thread(get_node_data, device, nodes, skip_pips=True)
+
+    db = NodesDatabase.get(device)
+    return db.get_pips(nodes, filter_type = filter_type)
+
+def get_node_data(udb, nodes, regex=False, executor = None, filter_by_name=True, skip_missing = False, skip_pips=False):
     from nodes_database import NodesDatabase
     import fuzzloops
 
@@ -326,32 +347,45 @@ def get_node_data(udb, nodes, regex=False, executor = None):
         all_nodes = get_full_node_list(udb)
         regex = [re.compile(n) for n in nodes]
         nodes = sorted(set([n for n in all_nodes if any([r for r in regex if r.search(n) is not None])]))
+    elif filter_by_name:
+        all_nodes = get_full_node_list(udb)
+        nodes = sorted(set(nodes) & all_nodes)
+
+    if len(nodes) == 0:
+        return []
 
     db = NodesDatabase.get(udb)
-    nis = db.get_node_data(nodes)
+    t = time.time()
+    nis = db.get_node_data(nodes, skip_pips=skip_pips)
+    logging.debug(f"Looked up {len(nis)} records in {time.time() - t} sec")
     missing = sorted({k for k in nodes if k not in nis})
     futures = []
 
-    if len(missing):
+    if not skip_missing and len(missing):
         cnt = 5000
-        logging.info(f"Getting from lapie: {missing[:10]}...")
+        logging.info(f"Getting from lapie: {len(missing)} nodes {missing[:10]}...")
 
         with fuzzloops.Executor(executor) as local_executor:
             def lapie_get_node_data(query):
                 s = time.time()
-                nodes = _get_node_data(udb, missing[:cnt])
+                nodes = _get_node_data(udb, query)
                 logging.debug(f"{len(query)} N {len(query) / (time.time() - s)} N/sec ({(time.time() - s)} deltas)")
                 return nodes
 
             def integrate_nodes(nodes):
-                db.insert_nodeinfos(nodes)
+                db = NodesDatabase.get(udb)
+                try:
+                    db.insert_nodeinfos(nodes)
+                except sqlite3.OperationalError as e:
+                    logging.warning(f"Could not populate node db: {e}")
+
                 for n in nodes:
                     nis[n.name] = n
 
-            while len(missing):
-                f = local_executor.submit(lapie_get_node_data, missing[:cnt])
-                missing = missing[cnt:]
+            for grp in itertools.batched(missing, cnt):
+                f = local_executor.submit(lapie_get_node_data, list(grp))
                 futures.append(fuzzloops.chain(f, integrate_nodes))
+
     if executor is not None:
         return fuzzloops.chain(futures, lambda _: list(nis.values()))
     else:
@@ -416,6 +450,7 @@ def parse_report_site(rpt):
 
     return sites
 
+@cachecontrol.cache_fn()
 def get_sites_with_pin(device):
     from nodes_database import NodesDatabase
 

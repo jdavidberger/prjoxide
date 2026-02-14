@@ -55,6 +55,9 @@ def get_db_subdir(family = None, device = None, package = None):
     exist.
     """
     subdir = get_db_root()
+    if family is None and device is not None:
+        family = device.split('-')[0]
+
     dparts = [family, device, package]
     for dpart in dparts:
         if dpart is None:
@@ -110,7 +113,7 @@ def get_iodb(family, device = None):
     with open(tgjson, "r") as f:
         return json.load(f)
 
-
+@cache
 def get_devices():
     """
     Return the deserialised content of devices.json

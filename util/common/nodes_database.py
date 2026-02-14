@@ -1,102 +1,143 @@
 import logging
 import sqlite3
+import threading
+import time
+from collections import defaultdict
 from threading import RLock
 
+_thread_local = threading.local()
 
 class NodesDatabase:
-    _dbs = {}
     _lock = RLock()
+    _write_locks = {}
+    _last_checkpoint = {}
+    current_version = 3
 
     @staticmethod
     def get(device):
         with NodesDatabase._lock:
-            if device not in NodesDatabase._dbs:
-                NodesDatabase._dbs[device] = NodesDatabase(device)
-            return NodesDatabase._dbs[device]
+            global _thread_local
+            dbs = getattr(_thread_local, 'dbs', None)
+            if dbs is None:
+                logging.warning(f"Creating dbs {_thread_local} {threading.get_ident()}")
+                setattr(_thread_local, 'dbs', {})
+                dbs = _thread_local.dbs
+            if device not in NodesDatabase._write_locks:
+                NodesDatabase._write_locks[device] = threading.Lock()
+            if device not in NodesDatabase._last_checkpoint:
+                NodesDatabase._last_checkpoint[device] = time.time()
+            if device not in dbs:
+                dbs[device] = NodesDatabase(device)
+            return dbs[device]
 
     def __init__(self, device):
         import database
-
+        self.write_lock = NodesDatabase._write_locks[device]
         self.db_path = f"{database.get_cache_dir()}/{device}-nodes.sqlite"
-        logging.debug(f"Opening node database at {self.db_path}")
+        logging.debug(f"Opening node database at {self.db_path} thread: {threading.get_ident()}")
 
         self.device = device
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.lock = RLock()
+        self.conn = sqlite3.connect(self.db_path)
         self.init_db()
 
     def init_db(self):
-        with self.lock:
-            conn = self.conn
-            conn.execute("PRAGMA foreign_keys = ON")
-            cur = conn.cursor()
+        conn = self.conn
+        cur = conn.cursor()
+        cur.execute("PRAGMA user_version;")
 
+        version = cur.fetchone()
+
+        with conn:
             cur.execute("""
-    CREATE TABLE IF NOT EXISTS nodes (
-        id   INTEGER PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
-        has_full_data INTEGER NOT NULL DEFAULT 0 CHECK (has_full_data IN (0, 1))
-    );
+            CREATE TEMP TABLE IF NOT EXISTS tmp_node_ids (
+                id   INTEGER PRIMARY KEY
+            );            
             """)
-
-            # PIPs table:
-            # from_wire and to_wire are node IDs
-            # bidir = 0 (unidirectional) or 1 (bidirectional)
             cur.execute("""
-    CREATE TABLE IF NOT EXISTS pips (
-        from_id INTEGER NOT NULL,
-        to_id   INTEGER NOT NULL,
-        bidir INTEGER NOT NULL CHECK (bidir IN (0,1)),
-        jumpwire INTEGER NOT NULL CHECK (jumpwire IN (0,1)) DEFAULT 0,
-        flags INTEGER NOT NULL DEFAULT 0,
-        buffertype TEXT NOT NULL DEFAULT "",
-        PRIMARY KEY (from_id, to_id),
-        FOREIGN KEY (from_id) REFERENCES nodes(id),
-        FOREIGN KEY (to_id)   REFERENCES nodes(id)
-    ) WITHOUT ROWID;
-            """)
-
-            try:
-                cur.execute("ALTER TABLE pips ADD COLUMN jumpwire INTEGER")
-            except sqlite3.OperationalError as e:
-                pass
-
-            cur.execute("""
-    CREATE TEMP TABLE IF NOT EXISTS tmp_node_names (
-        name TEXT PRIMARY KEY
-    );
-            """)
-
-            cur.execute("""
-    CREATE TEMP TABLE IF NOT EXISTS tmp_node_ids (
-        id   INTEGER PRIMARY KEY
-    );            
-            """)
-
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS sites (
-                id   INTEGER PRIMARY KEY,
-                name TEXT UNIQUE NOT NULL,
-                type TEXT NOT NULL,
-                x    INTEGER NOT NULL,
-                y    INTEGER NOT NULL
+                        CREATE
+                        TEMP TABLE IF NOT EXISTS tmp_node_names (
+                name TEXT PRIMARY KEY
             );
             """)
 
-            cur.execute("""
-CREATE TABLE IF NOT EXISTS site_pins (
-    site_id INTEGER NOT NULL,
-    pin_name TEXT NOT NULL,
-    node_id INTEGER NOT NULL,
+        if len(version) == 0 or version[0] != NodesDatabase.current_version:
+                with conn:
+                    cur.execute(f"PRAGMA user_version = {NodesDatabase.current_version};")
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    conn.execute('PRAGMA journal_mode=WAL;')
+                    conn.execute('PRAGMA synchronous=NORMAL')
 
-    PRIMARY KEY (site_id, pin_name),
+                    cur.execute("""
+            CREATE TABLE IF NOT EXISTS nodes (
+                id   INTEGER PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL,
+                has_full_data INTEGER NOT NULL DEFAULT 0 CHECK (has_full_data IN (0, 1))
+            );
+                    """)
 
-    FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE,
-    FOREIGN KEY (node_id) REFERENCES nodes(id)
-) WITHOUT ROWID;
-                        """)
+                    try:
+                        cur.execute("ALTER TABLE pips ADD COLUMN jumpwire INTEGER")
+                    except sqlite3.OperationalError as e:
+                        pass
 
-            conn.commit()
+                    # PIPs table:
+                    # from_wire and to_wire are node IDs
+                    # bidir = 0 (unidirectional) or 1 (bidirectional)
+                    cur.execute("""
+            CREATE TABLE IF NOT EXISTS pips (
+                from_id INTEGER NOT NULL,
+                to_id   INTEGER NOT NULL,
+                bidir INTEGER NOT NULL CHECK (bidir IN (0,1)),
+                jumpwire INTEGER NOT NULL CHECK (jumpwire IN (0,1)) DEFAULT 0,
+                flags INTEGER NOT NULL DEFAULT 0,
+                buffertype TEXT NOT NULL DEFAULT "",
+                PRIMARY KEY (from_id, to_id),
+                FOREIGN KEY (from_id) REFERENCES nodes(id),
+                FOREIGN KEY (to_id)   REFERENCES nodes(id)
+            ) WITHOUT ROWID;
+                    """)
+
+                    try:
+                        cur.execute("""CREATE INDEX from_id_index ON pips (from_id);""")
+                        cur.execute("""CREATE INDEX to_id_index ON pips (to_id);""")
+                    except sqlite3.OperationalError as e:
+                        pass
+
+
+                    cur.execute("""
+                    CREATE TABLE IF NOT EXISTS sites (
+                        id   INTEGER PRIMARY KEY,
+                        name TEXT UNIQUE NOT NULL,
+                        type TEXT NOT NULL,
+                        x    INTEGER NOT NULL,
+                        y    INTEGER NOT NULL
+                    );
+                    """)
+
+                    cur.execute("""
+        CREATE TABLE IF NOT EXISTS site_pins (
+            site_id INTEGER NOT NULL,
+            pin_name TEXT NOT NULL,
+            node_id INTEGER NOT NULL,
+        
+            PRIMARY KEY (site_id, pin_name),
+        
+            FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE,
+            FOREIGN KEY (node_id) REFERENCES nodes(id)
+        ) WITHOUT ROWID;
+                                """)
+
+
+                    cur.execute("""
+                    CREATE TABLE IF NOT EXISTS node_aliases (
+                        node_id INTEGER NOT NULL,
+                        alias TEXT UNIQUE NOT NULL,
+                        
+                        PRIMARY KEY (alias),
+                        
+                        FOREIGN KEY (node_id) REFERENCES nodes(id)
+                    ) WITHOUT ROWID;            
+                    """)
 
     def _populate_tmp(self, cur, type, values):
         cur.execute(f"DELETE FROM tmp_node_{type}s")
@@ -123,6 +164,44 @@ CREATE TABLE IF NOT EXISTS site_pins (
         id_to_name = dict(cur.fetchall())
         name_to_id = {v: k for k, v in id_to_name.items()}
         return name_to_id
+
+    def get_pips(self, filter = None, filter_type = None):
+        conn = self.conn
+        cur = conn.cursor()
+
+        t = time.time()
+        if filter is None:
+            cur.execute(f"""
+                SELECT n1.name, n2.name
+                FROM pips p
+                JOIN nodes n1 ON n1.id = p.from_id
+                JOIN nodes n2 ON n2.id = p.to_id            
+            """)
+        elif filter_type is None:
+            self._populate_tmp(cur, "name", filter)
+            cur.execute(f"""
+                SELECT n1.name, n2.name
+                FROM pips p
+                JOIN nodes n1 ON n1.id = p.from_id
+                JOIN nodes n2 ON n2.id = p.to_id      
+                WHERE n1.name IN (SELECT name from tmp_node_names) OR n2.name IN (SELECT name from tmp_node_names)      
+            """)
+        else:
+            self._populate_tmp(cur, "name", filter)
+
+            cur.execute(f"""
+                SELECT n1.name, n2.name
+                FROM pips p
+                JOIN nodes n1 ON n1.id = p.from_id
+                JOIN nodes n2 ON n2.id = p.to_id      
+                WHERE {"n1" if filter_type == "from" else "n2"}.name IN (SELECT name from tmp_node_names)
+            """)
+
+        cnt = 0
+        for from_id, to_id in cur.fetchall():
+            yield from_id, to_id
+            cnt = cnt + 1
+        logging.debug(f"Returned {cnt} pips in {time.time()-t} seconds {cnt / (time.time()-t)} hz")
 
     def get_jumpwires(self):
         conn = self.conn
@@ -177,67 +256,97 @@ CREATE TABLE IF NOT EXISTS site_pins (
 
         conn.commit()
 
-    def get_node_data(self, names):
+    def get_node_data(self, names, skip_pips=False):
         from lapie import NodeInfo, PipInfo
 
-        with self.lock:
-            conn = self.conn
-            cur = conn.cursor()
+        conn = self.conn
+        cur = conn.cursor()
+        cur.arraysize = 100000
 
-            self._populate_tmp(cur, "name", names)
+        self._populate_tmp(cur, "name", names)
 
-            cur.execute(
-                f"SELECT id, name FROM nodes WHERE has_full_data = 1 and name IN (SELECT name from tmp_node_names)",
-            )
-            id_to_name = dict(cur.fetchall())
-            name_to_id = {v:k for k,v in id_to_name.items()}
+        cur.execute(
+            f"SELECT id, name FROM nodes WHERE has_full_data = 1 and name IN (SELECT name from tmp_node_names)",
+        )
+        id_to_name = dict(cur.fetchall())
+        name_to_id = {v:k for k,v in id_to_name.items()}
 
-            # Prepare result dict
-            result = {name: NodeInfo(name) for name in name_to_id}
+        # Prepare result dict
+        result = {name: NodeInfo(name) for name in name_to_id}
+        if skip_pips:
+            return result
 
-            self._populate_tmp(cur, "id", list(id_to_name.keys()))
-            # ---- Downhill PIPs ----
-            cur.execute(f"""
-                SELECT p.from_id, n2.name, p.bidir, p.flags, p.buffertype
-                FROM pips p
-                JOIN nodes n2 ON n2.id = p.to_id
-                WHERE p.from_id IN (SELECT id from tmp_node_ids)
-            """)
+        for k,v in result.items():
+            v.aliases.append(k)
 
-            for from_id, to_name, bidir, flags, bt in cur.fetchall():
-                from_name = id_to_name[from_id]
-                result[from_name].downhill_pips.append(
-                    PipInfo(from_name, to_name,
+        self._populate_tmp(cur, "id", list(id_to_name.keys()))
+
+        cur.execute(f"""
+            SELECT n1.name, n2.name, p.bidir, p.flags, p.buffertype
+            FROM pips p
+            JOIN nodes n1 ON n1.id = p.from_id
+            JOIN nodes n2 ON n2.id = p.to_id
+            WHERE p.from_id IN (SELECT id from tmp_node_ids) or
+                  p.to_id IN (SELECT id from tmp_node_ids)
+        """)
+
+        t = time.time()
+        cnt = 0
+        while True:
+            results = cur.fetchmany(cur.arraysize)
+            if not results:
+                break
+            cnt = cnt + len(results)
+            for from_name, to_name, bidir, flags, bt in results:
+                pip = PipInfo(from_name, to_name,
                             is_bidi=bool(bidir),
                             flags=flags,
                             buffertype=bt)
-                )
+                if from_name in result:
+                    result[from_name].downhill_pips.append(pip)
+                if to_name in result:
+                    result[to_name].uphill_pips.append(pip)
 
-            # ---- Uphill PIPs ----
-            cur.execute(f"""
-                SELECT p.to_id, n1.name, p.bidir, p.flags, p.buffertype
-                FROM pips p
-                JOIN nodes n1 ON n1.id = p.from_id
-                WHERE p.to_id IN (SELECT id from tmp_node_ids)
-            """)
+        logging.debug(f"Looked up {cnt} pips in {time.time() - t} sec")
 
-            for to_id, from_name, bidir, flags, bt in cur.fetchall():
-                to_name = id_to_name[to_id]
-                result[to_name].uphill_pips.append(
-                    PipInfo(from_name, to_name,
-                            is_bidi=bool(bidir),
-                            flags=flags,
-                            buffertype=bt)
-                )
+        cur.execute(f"""
+            SELECT n.node_id, n.alias
+            FROM node_aliases n
+            WHERE n.node_id IN (SELECT id from tmp_node_ids)                      
+        """)
+
+        for node_id, alias in cur.fetchall():
+            result[id_to_name[node_id]].aliases.append(alias)
 
         return result
 
-    def insert_nodeinfos(self, nodeinfos):
-        with self.lock:
-            conn = self.conn
-            cur = conn.cursor()
 
-            touched_names = set([w for ni in nodeinfos for p in ni.pips() for w in [p.to_wire, p.from_wire]]) | set([n.name for n in nodeinfos])
+    def insert_nodeinfos(self, nodeinfos):
+        with self.write_lock:
+            exception = None
+            for i in range(3):
+                try:
+                    self._insert_nodeinfos(nodeinfos)
+
+                    now = time.time()
+                    if now - NodesDatabase._last_checkpoint[self.device] > 5 * 60:
+                        NodesDatabase._last_checkpoint[self.device] = now
+                        cur = self.conn.cursor()
+                        logging.debug(f"Running wal checkpoint {threading.get_ident()}")
+                        cur.execute("PRAGMA wal_checkpoint(FULL);")
+
+                    return
+                except sqlite3.OperationalError as e:
+                    exception = e
+            logging.warning(f"Could not insert nodeinfos after 3 tries: {exception}")
+
+    def _insert_nodeinfos(self, nodeinfos):
+        touched_names = set([w for ni in nodeinfos for p in ni.pips() for w in [p.to_wire, p.from_wire]]) | set(
+            [n.name for n in nodeinfos])
+
+
+        with self.conn as conn:
+            cur = conn.cursor()
 
             # 1. Insert all nodes
             cur.executemany(
@@ -254,8 +363,6 @@ CREATE TABLE IF NOT EXISTS site_pins (
                     WHERE name IN (SELECT name from tmp_node_names)
                     """
             )
-            # 2. Resolve node ids
-            names = [ni.name for ni in nodeinfos]
 
             self._populate_tmp(cur, "name", touched_names)
 
@@ -288,7 +395,14 @@ CREATE TABLE IF NOT EXISTS site_pins (
                 pip_rows
             )
 
-            conn.commit()
+            cur.executemany(
+                """
+                INSERT OR IGNORE INTO node_aliases
+                (node_id, alias)
+                VALUES (?, ?)
+                """,
+                [(name_to_id[n.name], alias) for n in nodeinfos for alias in n.aliases if alias != n.name]
+            )
 
     def insert_sites_and_fetch_ids(self, sites):
         if not sites:

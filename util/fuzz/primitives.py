@@ -10,6 +10,9 @@ class PrimitiveSetting:
         self.name = name
         self.desc = desc
         self.depth = depth
+
+        # The enable value for a setting is the one that is required or sufficient to turn the primitive on in the bit
+        # stream. None means the values of this setting have no enable effect on the primitive mode.
         self.enable_value = enable_value
 
     def format(self, prim, value):

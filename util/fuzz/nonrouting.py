@@ -44,13 +44,13 @@ def fuzz_word_setting(config, name, length, get_sv_substs, desc="", executor = N
         def integrate_bitstreams(bitstreams):
             baseline = bitstreams[0]
             bitstreams = bitstreams[1:]
-            db = fuzzconfig.get_db()
-            fz = libpyprjoxide.Fuzzer.word_fuzzer(db, baseline, set(config.tiles), name, desc, length,
-                                                  baseline)
-            for i in range(length):
-                fz.add_word_sample(db, i, bitstreams[i])
+            with fuzzconfig.db_lock() as db:
+                fz = libpyprjoxide.Fuzzer.word_fuzzer(db, baseline, set(config.tiles), name, desc, length,
+                                                      baseline)
+                for i in range(length):
+                    fz.add_word_sample(db, i, bitstreams[i])
 
-            config.solve(fz)
+                config.solve(fz, db)
 
         return [*bitstream_futures, fuzzloops.chain([baseline, *bitstream_futures], "Solve word", integrate_bitstreams)]
 
@@ -102,12 +102,12 @@ def fuzz_enum_setting(config, empty_bitfile, name, values, get_sv_substs, includ
             future.name = "Build design"
 
         def integrate_bitstreams(bitstreams):
-            db = fuzzconfig.get_db()
-            fz = libpyprjoxide.Fuzzer.enum_fuzzer(db, empty_bitfile, set(config.tiles), name, desc,
-                                                  include_zeros, assume_zero_base, mark_relative_to=mark_relative_to)
-            for (opt, bitstream) in bitstreams:
-                fz.add_enum_sample(db, opt, bitstream)
-            config.solve(fz)
+            with fuzzconfig.db_lock() as db:
+                fz = libpyprjoxide.Fuzzer.enum_fuzzer(db, empty_bitfile, set(config.tiles), name, desc,
+                                                      include_zeros, assume_zero_base, mark_relative_to=mark_relative_to)
+                for (opt, bitstream) in bitstreams:
+                    fz.add_enum_sample(db, opt, bitstream)
+                config.solve(fz, db)
 
         return fuzzloops.chain(futures, "Enum Setting", integrate_bitstreams )
 
@@ -146,12 +146,12 @@ def fuzz_ip_word_setting(config, name, length, get_sv_substs, desc="", default=N
     def integrate_bitstreams(bitstreams):
         baseline = bitstreams[0]
         ipcore, iptype = config.tiles[0].split(":")
-        db = fuzzconfig.get_db()
-        fz = libpyprjoxide.IPFuzzer.word_fuzzer(db, baseline, ipcore, iptype, name, desc, length, inverted_mode)
-        for (i, bitfile) in enumerate(bitstreams[1:]):
-            bits = [(j >> i) & 0x1 == (1 if inverted_mode else 0) for j in range(length)]
-            fz.add_word_sample(db, bits, bitfile)
-        config.solve(fz)
+        with fuzzconfig.db_lock() as db:
+            fz = libpyprjoxide.IPFuzzer.word_fuzzer(db, baseline, ipcore, iptype, name, desc, length, inverted_mode)
+            for (i, bitfile) in enumerate(bitstreams[1:]):
+                bits = [(j >> i) & 0x1 == (1 if inverted_mode else 0) for j in range(length)]
+                fz.add_word_sample(db, bits, bitfile)
+            config.solve(fz, db)
 
     return [*bitstream_futures, fuzzloops.chain([baseline_future, *bitstream_futures], "Solve IP word", integrate_bitstreams)]
 
@@ -180,11 +180,11 @@ def fuzz_ip_enum_setting(config, empty_bitfile, name, values, get_sv_substs, des
     ]
 
     def integrate_bitstreams(bitstreams):
-        db = fuzzconfig.get_db()
-        fz = libpyprjoxide.IPFuzzer.enum_fuzzer(db, empty_bitfile, ipcore, iptype, name, desc)
-        for (opt, bitfile) in zip(values, bitstreams):
-            fz.add_enum_sample(db, opt, bitfile)
-        config.solve(fz)
+        with fuzzconfig.db_lock() as db:
+            fz = libpyprjoxide.IPFuzzer.enum_fuzzer(db, empty_bitfile, ipcore, iptype, name, desc)
+            for (opt, bitfile) in zip(values, bitstreams):
+                fz.add_enum_sample(db, opt, bitfile)
+            config.solve(fz, db)
 
     return [*bitstream_futures, fuzzloops.chain(bitstream_futures,  "Solve IP enum", integrate_bitstreams)]
 

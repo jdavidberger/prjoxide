@@ -2,26 +2,20 @@
 General Utilities for Fuzzing
 """
 import asyncio
-import concurrent
 import logging
 import os
-import shutil
 import signal
 import threading
 import time
+import traceback
 from asyncio import CancelledError
-from os import abort
-from pathlib import Path
-from signal import SIGINT, SIGTERM
-
-import lapie
-
 from collections import defaultdict
-
 from concurrent.futures import ThreadPoolExecutor, Future
 from contextlib import contextmanager
+from signal import SIGINT, SIGTERM
 from threading import Thread, RLock
-import traceback
+
+import lapie
 
 is_in_loop = False
 
@@ -168,7 +162,8 @@ def chain(future, func, *args, **kwargs):
             r = f.result()
             if hasattr(f, 'executor'):
                 new_f = f.executor.submit(func, r, *args, **kwargs)
-                new_f.add_done_callback(fut.set_result)
+                new_f.add_done_callback(lambda f, fut=fut: fut.set_result(f.result()))
+                new_f.name = name
             else:
                 fut.set_result(func(r, *args, **kwargs))
         except BaseException as e:
@@ -232,28 +227,26 @@ class AsyncExecutor:
     def shutdown(self):
         self.executor.shutdown(wait=True, cancel_futures=True)
 
-def FuzzerAsyncMain(f):
+def FuzzerAsyncMain(f, *args, **kwargs):
     from fuzzconfig import FuzzConfig
 
-    import rich
     import rich.console
     from rich.live import Live
     from rich.panel import Panel
-    from rich.text import Text
 
     console = rich.console.Console()
     import sys
+    orignal_stdout = sys.stdout
     sys.stdout = console.file
 
     from rich.logging import RichHandler
 
     LOGLEVEL = os.environ.get('LOGLEVEL', 'INFO').upper()
-
     logging.basicConfig(
         level=LOGLEVEL,
-        handlers=[RichHandler(console=console, show_time=False, show_path=False)],
+        handlers=[RichHandler(console=console, show_time=False, show_path=False, rich_tracebacks=True)],
+        force=True
     )
-
 
     start_time = time.time()
 
@@ -286,50 +279,56 @@ def FuzzerAsyncMain(f):
                     height=3,
                 )
 
-            async def ui(async_executor):
-                with Live(status_panel(""), refresh_per_second=10, console=console) as live:
-                    finished_tasks = 0
+            async def ui(async_executor, task):
+                try:
+                    with Live(status_panel(""), refresh_per_second=10, console=console) as live:
+                        finished_tasks = 0
 
-                    while async_executor.busy() or not task.done():
-                        histogram = defaultdict(int)
+                        while async_executor.busy() or not task.done():
+                            histogram = defaultdict(int)
 
-                        def process_future(fut):
-                            nonlocal finished_tasks
+                            def process_future(fut):
+                                nonlocal finished_tasks
 
-                            name = "anon"
-                            if hasattr(fut, "name"):
-                                name = fut.name
-                            elif hasattr(fut, "get_stack"):
-                                fn = fut.get_stack()[-1].f_code.co_name
-                                if fn != "ui" and fn != "start":
-                                    ln = fut.get_stack()[-1].f_lineno
-                                    name = f"{fn}:{ln}"
-                                else:
-                                    name = None
+                                name = "anon"
+                                if hasattr(fut, "name"):
+                                    name = fut.name
+                                elif hasattr(fut, "get_stack"):
+                                    fn = fut.get_stack()[-1].f_code.co_name
+                                    if fn != "ui" and fn != "start":
+                                        ln = fut.get_stack()[-1].f_lineno
+                                        name = f"{fn}:{ln}"
+                                    else:
+                                        name = None
 
-                            if name is not None:
-                                histogram[name] = histogram[name] + 1
+                                if name is not None:
+                                    histogram[name] = histogram[name] + 1
 
-                            if fut.done():
-                                if fut.exception() is not None:
-                                    logging.error(f"Encountered exception in future {fut}: {fut.exception()}")
+                                if fut.done():
                                     try:
-                                        raise fut.exception()
-                                    except:
-                                        traceback.print_exc()
-                                    all_exceptions.append(fut.exception())
-                                else:
-                                    finished_tasks = finished_tasks + 1
-                                    fut.result()
+                                        if fut.exception() is not None:
+                                            logging.error(f"Encountered exception in future {fut}: {fut.exception()}")
+                                            traceback.print_exception(fut.excecption())
+                                            all_exceptions.append(fut.exception())
+                                        else:
+                                            finished_tasks = finished_tasks + 1
+                                            fut.result()
+                                    except BaseException as e:
+                                        all_exceptions.append(e)
 
-                        for fut in async_executor.iterate_futures(): process_future(fut)
-                        for fut in asyncio.all_tasks(): process_future(fut)
+                            for fut in async_executor.iterate_futures(): process_future(fut)
+                            for fut in asyncio.all_tasks(): process_future(fut)
 
-                        width = shutil.get_terminal_size().columns
-                        text = f"{list(histogram.items())} {async_executor.task_count()} {finished_tasks} finished {len(all_exceptions)} errors, built/cached {FuzzConfig.radiant_builds}/{FuzzConfig.radiant_cache_hits} tool queries {lapie.run_with_udb_cnt} {int(time.time() - start_time)}s"
-                        # print("{text:>{width}}".format(text=text, width=width), end="\r")
-                        live.update(status_panel(text))
-                        await asyncio.sleep(.1)
+                            text = f"{list(histogram.items())} {async_executor.task_count()} {finished_tasks} finished {len(all_exceptions)} errors, built/cached {FuzzConfig.radiant_builds}/{FuzzConfig.radiant_cache_hits} tool queries {lapie.run_with_udb_cnt} {int(time.time() - start_time)}s"
+
+                            live.update(status_panel(text))
+                            await asyncio.sleep(1)
+                except BaseException as e:
+                    logging.warning(f"Shutting down UI due to exception {e}")
+                    traceback.print_exception(e)
+                    raise
+                finally:
+                    print("Exit ui thread")
 
 
             with Executor() as executor:
@@ -340,17 +339,26 @@ def FuzzerAsyncMain(f):
 
                     all_exceptions = []
 
-                    task = asyncio.create_task(f(async_executor))
-                    ui_task = asyncio.create_task(ui(async_executor))
+                    task = asyncio.create_task(f(async_executor, *args, **kwargs))
+                    ui_task = ui(async_executor, task)
 
-                    await asyncio.gather(task, ui_task)
+                    (_, task_result) = await asyncio.gather(ui_task, task, return_exceptions=False)
 
-                    logging.info("UI and main task finished")
+                    logging.info(f"UI and main task finished {task_result}")
 
-                except CancelledError:
+                except CancelledError as e:
                     logging.warning("Cancelling all executor jobs")
+                    traceback.print_exception(e)
                     executor.shutdown(wait=False, cancel_futures=True)
                     raise
+                except BaseException as e:
+                    logging.warning(f"Shutting down executor due to exception {e}")
+                    traceback.print_exception(e)
+                    executor.shutdown(wait=True, cancel_futures=True)
+                    raise
+                finally:
+                    logging.info("Shutting down threads")
+            logging.info("Shut down threads")
 
         except KeyboardInterrupt:
             logging.warning("Keyboard interrupt")

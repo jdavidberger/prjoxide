@@ -2,10 +2,14 @@
 This module provides a structure to define the fuzz environment
 """
 import gzip
+import hashlib
 import logging
 import os
+import pickle
 import threading
 from concurrent.futures import Future
+from functools import cache
+from multiprocessing.synchronize import RLock
 from os import path
 from pathlib import Path
 from string import Template
@@ -16,15 +20,29 @@ import cachecontrol
 
 #db = None
 
-def get_db():
-    #global db
-    l = threading.local()
-    if "fuzz_db" in l.__dict__:
-        return l.__dict__["fuzz_db"]
-    l.__dict__["fuzz_db"] = libpyprjoxide.Database(database.get_db_root())
-    #if db is None:
-    #    db = l.__dict__["fuzz_db"]
-    return l.__dict__["fuzz_db"]
+class LockedObject:
+    def __init__(self, obj):
+        self.obj = obj
+        self.lock = threading.Lock()
+
+    def __enter__(self):
+        self.lock.acquire()
+        return self.obj
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.lock.release()
+
+_db_lock = None
+
+def db_lock():
+    global _db_lock
+    if _db_lock is None:
+        db = libpyprjoxide.Database(database.get_db_root())
+        _db_lock = LockedObject(db)
+
+    return _db_lock
+
+
 
 PLATFORM_FILTER = os.environ.get("FUZZER_PLATFORM", None)
 
@@ -37,16 +55,67 @@ def should_fuzz_platform(device):
         return False
     return True
 
-@cachecontrol.cache_fn()
-def find_baseline_differences(device, active_bitstream):
-    baseline = FuzzConfig.standard_empty(device)
-    db = get_db()
-    deltas = libpyprjoxide.Chip.from_bitstream(db, baseline).delta(db, active_bitstream)
+def devices_to_fuzz():
+    families = database.get_devices()["families"]
 
-    ip_values = libpyprjoxide.Chip.from_bitstream(db, active_bitstream).get_ip_values()
-    ip_values = [(a, v) for a, v in ip_values if v != 0]
+    return sorted([
+        device
+        for family in families
+        for device in families[family]["devices"]
+        if should_fuzz_platform(device)
+    ])
 
-    return deltas, ip_values
+
+@cache
+def get_baseline_chip(baseline):
+    with db_lock() as db:
+        logging.info(f"Loading {baseline}")
+        return libpyprjoxide.Chip.from_bitstream(db, baseline)
+
+def find_baseline_differences_hash_fn(args, kwds):
+    device = kwds["device"]
+    baseline = kwds.get("baseline", None)
+    if baseline is None:
+        baseline = FuzzConfig.standard_empty(device)
+
+    kwds["active_bitstream"] = hashlib.sha1(open(kwds["active_bitstream"].bitstream, 'br').read()).hexdigest()
+    kwds["baseline"] = hashlib.sha1(open(baseline.bitstream, 'br').read()).hexdigest()
+
+    sorted_kwargs = sorted(kwds.items())
+
+    serialized = pickle.dumps(sorted_kwargs)
+    return hashlib.sha256(serialized).hexdigest()
+
+@cachecontrol.cache_fn(find_baseline_differences_hash_fn)
+def find_baseline_differences(device, active_bitstream, ignore_tiles=set(), baseline = None):
+    import tiles
+
+    if baseline is None:
+        baseline = FuzzConfig.standard_empty(device)
+
+    baseline_chip = get_baseline_chip(baseline.bitstream)
+    with db_lock() as db:
+        deltas, ip_values = baseline_chip.delta_with_ipvalues(db, active_bitstream.bitstream)
+        ip_values = [(a, v) for a, v in ip_values if v != 0]
+
+    filtered_deltas = {k: v for k, v in deltas.items() if k not in ignore_tiles}
+
+    return filtered_deltas, ip_values
+
+@cache
+def read_design_template(des_template):
+    with open(des_template, "r") as inf:
+        return inf.read()
+
+class BitstreamInfo:
+    def __init__(self, config, bitstream_file, vfiles):
+        self.config = config
+        self.bitstream = bitstream_file
+        self.vfiles = vfiles
+
+    def __str__(self):
+        return self.bitstream
+
 
 class FuzzConfig:
     _standard_empty_bitfile = {}
@@ -74,6 +143,7 @@ class FuzzConfig:
         self.udb_specimen = None
 
     @staticmethod
+    @cache
     def standard_empty(device):
         if device not in FuzzConfig._standard_empty_bitfile:
             cfg = FuzzConfig(job=f"standard-empty-file", device=device, tiles=[])
@@ -81,9 +151,16 @@ class FuzzConfig:
             pass
         return FuzzConfig._standard_empty_bitfile[device]
 
+    @staticmethod
+    @cache
+    def standard_chip(device):
+        with db_lock() as db:
+            baseline = FuzzConfig.standard_empty(device)
+            return libpyprjoxide.Chip.from_bitstream(db, baseline.bitstream)
+
     @property
     def workdir(self):
-        return path.join(".", "work", self.device, self.job)
+        return path.join(database.get_oxide_root(), "work", Path(os.getcwd()).name, self.device, self.job)
 
     def make_workdir(self):
         """Create the working directory for this job, if it doesn't exist already"""
@@ -110,12 +187,12 @@ class FuzzConfig:
         logging.debug(f"{self.delta_dir()}/{self.job}/{name}.ron miss")
         return False
 
-    def solve(self, fz):
+    def solve(self, fz, db):
         try:
-            fz.solve(get_db())
+            fz.solve(db)
             self.serialize_deltas(fz, fz.get_name())
         except:
-            self.serialize_deltas(fz, f"{fz.get_name()}/FAILED")
+            self.serialize_deltas(fz, f"{fz.get_name()}-FAILED")
             raise
 
     def setup(self, skip_specimen=False):
@@ -162,9 +239,10 @@ class FuzzConfig:
 
         Returns the path to the output bitstream
         """
+        logging.debug(f"Building {des_template} with subs {substitutions}")
         subst = dict(substitutions)
 
-        prefix = f"{threading.get_ident()}/{prefix}"
+        prefix = f"{threading.get_ident()}/{prefix}/"
 
         subst_defaults = self.subst_defaults()
 
@@ -185,12 +263,13 @@ class FuzzConfig:
             if path.exists(bf):
                 os.remove(bf)
 
-        with open(des_template, "r") as inf:
-            with open(desfile, "w") as ouf:
-                if substitute:
-                    ouf.write(Template(inf.read()).substitute(**subst))
-                else:
-                    ouf.write(inf.read())
+        template_contents = read_design_template(des_template)
+
+        with open(desfile, "w") as ouf:
+            if substitute:
+                ouf.write(Template(template_contents).substitute(**subst))
+            else:
+                ouf.write(template_contents)
 
         env = os.environ.copy()
         if self.struct_mode:
@@ -215,11 +294,12 @@ class FuzzConfig:
                         outf.write(gzf.read())
 
         if foundFile is not None:
+            rtn = BitstreamInfo(self, foundFile, desfile)
             if executor is not None:
                 f = Future()
-                f.set_result(foundFile)
+                f.set_result(rtn)
                 return f
-            return foundFile
+            return rtn
 
         def run_radiant_sh():
             FuzzConfig.radiant_builds = FuzzConfig.radiant_builds + 1
@@ -232,9 +312,9 @@ class FuzzConfig:
             if self.struct_mode and self.udb_specimen is None:
                 self.udb_specimen = path.join(self.workdir, prefix + "design.tmp", "par.udb")
             if path.exists(bitfile):
-                return bitfile
+                return BitstreamInfo(self, bitfile, desfile)
             if path.exists(bitfile_gz):
-                return bitfile_gz
+                return BitstreamInfo(self, bitfile_gz, desfile)
 
             raise Exception(f"Could not generate bitstream file {bitfile} {bitfile_gz}")
 
