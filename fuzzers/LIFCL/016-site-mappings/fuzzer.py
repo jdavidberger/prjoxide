@@ -61,11 +61,8 @@ async def find_relevant_tiles(device, site, site_type, site_info, executor):
 
     nodes = [p["pin_node"] for p in site_info["pins"]]
     logging.info(f"Getting relevant wire tiles for {device} {site}:{site_type}")
-    pips, _ = await asyncio.wrap_future(
-        tiles.get_local_pips_for_nodes(device, nodes, include_interface_pips=True,
-                                       should_expand=lambda p: p[0] in nodes or p[1] in nodes,
-                                       executor = executor)
-    )
+    pips, _ = tiles.get_local_pips_for_nodes(device, nodes, include_interface_pips=True,
+                                       should_expand=lambda p: p[0] in nodes or p[1] in nodes)
 
     wires_bitstream = await asyncio.wrap_future(interconnect.create_wires_file(cfg, pips, prefix=f"find-relevant-tiles/", executor = executor))
 
@@ -287,9 +284,8 @@ async def run_for_device(device, executor = None):
         tiletype = driving_tiles[0].split(":")[1]
 
         logging.info(f"====== {site} : {tiletype} ==========")
-        pips, local_graph = await asyncio.wrap_future(
-            executor.submit(tiles.get_local_pips_for_site, device, site)
-        )
+        pips, local_graph = tiles.get_local_pips_for_site(device, site)
+
         pips_future = list(map_local_pips(site, site_type, device, driving_tiles + site_tiles, pips, local_graph, executor=executor))
 
         # Map primitive parameter settings

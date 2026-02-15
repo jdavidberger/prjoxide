@@ -22,13 +22,20 @@ gzip and gunzip must be on your path for it to work
 """
 import logging
 import sys, os, shutil, hashlib, gzip
+import time
 from logging import exception
 from pathlib import Path
 
 root_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
 cache_dir = os.path.join(root_dir, ".bitstreamcache")
 
-def get_hash(device, input_files, env = None):
+def get_version_directory():
+    radiantdir = os.environ.get("RADIANTDIR", "UNKNOWN")
+    return Path(radiantdir).name + "-" + hashlib.md5(radiantdir.encode("UTF-8")).hexdigest()
+
+version_directory = get_version_directory()
+
+def get_hash_by_contents(device, input_file_contents, env = None):
     if env is None:
         env = os.environ
 
@@ -39,31 +46,63 @@ def get_hash(device, input_files, env = None):
         if envkey in env:
             hasher.update(envkey.encode('utf-8'))
             hasher.update(env[envkey].encode('utf-8'))
-    for fname in input_files:
-        ext = os.path.splitext(fname)[1]
+    for fn,contents in input_file_contents.items():
+        ext = os.path.splitext(fn)[1]
         hasher.update("input{}".format(ext).encode('utf-8'))
-        with open(fname, "rb") as f:
-            hasher.update(f.read())
-    return hasher.hexdigest()
+        hasher.update(contents)
+
+    # Split into chunks since some file systems don't scale well with giant flat dirs
+    h = hasher.hexdigest()
+    h_prefix = h[:2]
+    h_remaining = h[2:]
+    logging.debug(f"Hash lookup gave {h}")
+    return (h_prefix, h_remaining)
+
+def get_hash(device, input_files, env = None):
+    input_file_contents = {
+        fname: open(fname,"rb").read()
+        for fname in input_files
+    }
+
+    return get_hash_by_contents(device, input_file_contents, env=env)
+
+def fetch_by_contents(device, input_file_contents, env = None):
+    if not os.path.exists(cache_dir):
+        return
+
+    h = get_hash_by_contents(device, input_file_contents, env=env)
+
+    check_dirs = [os.path.join(cache_dir, version_directory, *h),
+                  os.path.join(cache_dir, "".join(h))]
+
+    for cache_entry in check_dirs:
+        if not os.path.exists(cache_entry) or len(os.listdir(cache_entry)) < 2:
+            continue
+
+        # Touch the directory and it's contents
+        now = time.time()
+        os.utime(cache_entry, (now, now))
+        products = os.listdir(cache_entry)
+        for outprod in products:
+            gz_path = os.path.join(cache_entry, outprod)
+            os.utime(gz_path, (now, now))
+
+            yield (outprod, gz_path)
+
+        if len(products):
+            return
+
 
 def fetch(device, input_files, env = None):
     if not os.path.exists(cache_dir):
         return
 
-    h = get_hash(device, input_files, env=env)
-    #print(h)
+    input_file_contents = {
+        fname:open(fname, "rb").read()
+        for fname in input_files
+    }
 
-    cache_entry = os.path.join(cache_dir, h)
-    if not os.path.exists(cache_entry) or len(os.listdir(cache_entry)) < 2:
-        return
-
-    # Touch the directory and it's contents
-    Path(cache_entry).touch()
-    for outprod in os.listdir(cache_entry):
-        gz_path = os.path.join(cache_entry, outprod)
-        Path(gz_path).touch()
-
-        yield (outprod, gz_path)
+    return fetch_by_contents(device, input_file_contents, env)
 
 def main():
     if len(sys.argv) < 2:
@@ -109,9 +148,10 @@ def main():
             print("Usage: tools/bitstreamcache.py commit <DEVICE> <INPUT FILE 1> <INPUT FILE 2> output <OUTPUT FILE 1> ..")
             sys.exit(1)
         h = get_hash(sys.argv[2], sys.argv[3:idx])
-        cache_entry = os.path.join(cache_dir, h)
+
+        cache_entry = os.path.join(cache_dir, version_directory, *h)
         if not os.path.exists(cache_entry):
-            os.mkdir(cache_entry)
+            os.makedirs(cache_entry, exist_ok=True)
         for outprod in sys.argv[idx+1:]:
             bn = os.path.basename(outprod)
             cn = os.path.join(cache_entry, bn + ".gz")

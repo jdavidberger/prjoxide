@@ -83,7 +83,8 @@ def main(argv):
 
     def fixup(tiletype):
         if args.device.find("-33") > 0:
-            tiletypes_with_variants = ["LRAM_", "SYSIO_B1_DED", "SPINE_"]
+            # These definitions were found to have conflicting PIPs against LIFCL-40/17
+            tiletypes_with_variants = ["LRAM_", "SYSIO_B1_DED", "SPINE_", "TAP_CIB", "TMID_1", "CIB_LR"]
             for v in tiletypes_with_variants:
                 if tiletype.startswith(v):
                     return tiletype + "_33K"
