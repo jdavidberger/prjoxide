@@ -1,3 +1,5 @@
+import logging
+
 import fuzzconfig
 import nonrouting
 import fuzzloops
@@ -138,9 +140,14 @@ def main():
             if wid_idx != -1:
                 prim_type = prim_type[0:wid_idx]
             bit = cfg.build_design(cfg.sv, dict(cmt="", prim=prim_type, site=site, config=ip_settings[prim]))
-            chip = libpyprjoxide.Chip.from_bitstream(fuzzconfig.db, bit)
-            ipv = chip.get_ip_values()
-            assert len(ipv) > 0
+            with fuzzconfig.db_lock() as db:
+                chip = libpyprjoxide.Chip.from_bitstream(db, bit.bitstream)
+                ipv = chip.get_ip_values()
+
+            logging.info(f"{bit.bitstream} {cfg.device} {site} {prim} has {len(ipv)} IP deltas")
+            if len(ipv) == 0:
+                continue
+
             addr = ipv[0][0]
             ip_name = site
             if "EBR_CORE" in ip_name:
@@ -155,4 +162,5 @@ def main():
             print(json.dumps(dict(regions=ip_base), sort_keys=True, indent=4), file=jf)
     
 if __name__ == "__main__":
-    main()
+    fuzzloops.FuzzerMain(main)
+

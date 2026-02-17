@@ -25,6 +25,10 @@ import database
 
 mapped_sites = set()
 
+async def wrap_future(f):
+    if f is not None:
+        return await asyncio.wrap_future(f)
+
 # These tiles overlap many sites and are not the main site tiles
 overlapping_tile_types = set(["CIB", "MIB_B_TAP", "TAP_CIB"] +
                              [f"BANKREF{i}" for i in range(16)] +
@@ -86,52 +90,24 @@ async def find_relevant_tiles_from_primitive(device, primitive, site, site_info,
         "site_type": site_type,
         "extra": "",
         "signals": ""
-    }, prefix=f"find-relevant-tiles/{primitive.mode}/"))
+    }, prefix=f"find-relevant-tiles/mode-{primitive.mode}/"))
     logging.info(f"Getting relevant tiles for {device} {site}:{site_type} for {primitive.mode}")
 
-    driving_tiles, site_tiles, ip_values = find_relevant_tiles_from_bitstream(device, site, primitive_bitstream)
+    return find_relevant_tiles_from_bitstream(device, site, primitive_bitstream)
 
-    # Also get the tiling from just the wiring
-    pin_driving_tiles, pin_site_tiles, pin_ip_values = await find_relevant_tiles(device, site, site_type, site_info, executor = executor)
-
-    # Note: We do this to keep ordering but removing dups
-    def uniq(x):
-        return list(dict.fromkeys(x))
-
-    return uniq(driving_tiles + pin_driving_tiles), uniq(site_tiles + pin_site_tiles), uniq(ip_values + pin_ip_values)
+    # # Also get the tiling from just the wiring
+    # pin_driving_tiles, pin_site_tiles, pin_ip_values = await find_relevant_tiles(device, site, site_type, site_info, executor = executor)
+    #
+    # # Note: We do this to keep ordering but removing dups
+    # def uniq(x):
+    #     return list(dict.fromkeys(x))
+    #
+    # return uniq(driving_tiles + pin_driving_tiles), uniq(site_tiles + pin_site_tiles), uniq(ip_values + pin_ip_values)
 
 mux_re = re.compile("MUX[0-9]*$")
 
-# Take all a given sites local graph and pips, and solve for all of it
-def map_local_pips(site, site_type, device, ts, pips, local_graph, executor=None):
-    cfg = FuzzConfig(job=f"{site}:{site_type}", sv="../shared/route.v", device=device, tiles=ts)
-
-    logging.debug(f"PIPs for {site}:")
-    for p in pips:
-        logging.debug(f" - {p[0]} -> {p[1]}")
-
-    external_nodes = [wire for pip in pips for wire in pip if wire not in local_graph]
-
-    # CIB is routed separately
-    cfg.tiles.extend(
-        [tile for n in external_nodes for tile in tiles.get_tiles_by_rc(device, n) if tile.split(":")[-1] != "CIB"])
-    cfg.tiles = [t for t in cfg.tiles if not t.split(":")[-1].startswith("CIB")]
-
-    if len(cfg.tiles) == 0:
-        logging.warning(f"Local pips for {site} only corresponded to CIB tiles")
-        return
-
-    mux_pips = [p for p in pips if mux_re.search(p[0]) and mux_re.search(p[1])]
-    non_mux_pips = [p for p in pips if not p in mux_pips]
-    if len(non_mux_pips):
-        yield from fuzz_interconnect_sinks(cfg, non_mux_pips, False, executor = executor)
-
-    if len(mux_pips):
-        mux_cfg = FuzzConfig(job=f"{site}:{site_type}-MUX", sv="../shared/route.v", device=device, tiles=cfg.tiles)
-        yield from fuzz_interconnect_sinks(mux_cfg, mux_pips, True, executor = executor)
-
 # Use the primitive definitions to map out each mode's options. Works for IP and non IP settings
-def map_primitive_settings(device, ts, site, site_tiles, site_type, ip_values, executor = None):
+async def map_primitive_settings(device, ts, site, site_tiles, site_type, ip_values, executor = None):
     if site_type not in primitives.primitives:
         return []
 
@@ -150,8 +126,8 @@ def map_primitive_settings(device, ts, site, site_tiles, site_type, ip_values, e
         fuzz_enum_setting = nonrouting.fuzz_enum_setting
         fuzz_word_setting = nonrouting.fuzz_word_setting
 
-    def map_mode(mode):
-        logging.info(f"====== {mode.mode} : {site_type} IP: {len(ip_values)} ==========")
+    async def map_mode(mode):
+        logging.info(f"====== {mode.mode} : {site}:{site_type} IP: {len(ip_values)} ==========")
         related_tiles = (ts + site_tiles)
         cfg = FuzzConfig(job=f"config/{site_type}/{site}/{mode.mode}", device=device, sv="primitive.v", tiles= related_tiles if len(ip_values) == 0 else [f"{site}:{site_type}"])
 
@@ -209,40 +185,39 @@ def map_primitive_settings(device, ts, site, site_tiles, site_type, ip_values, e
             "signals": ", ".join(signals)
         }
 
-        def map_mode_setting(setting):
+        async def map_mode_setting(setting):
             mark_relative_to = None
             if site_tiles[0] != ts[0]:
                 mark_relative_to = site_tiles[0]
 
             args = {
                 "config": cfg,
-                "name": f"{mode.mode}.{setting.name}",
+                "name": f"{site}.{setting.name}",# "name": f"{mode.mode}.{setting.name}",
                 "desc": setting.desc,
                 "executor": executor
             }
 
             if isinstance(setting, primitives.EnumSetting):
-                def subs_fn(val):
-                    return subs | {"config": mode.configuration([(setting, val)])}
+                subs_fn = lambda val, setting=setting, mode=mode: subs | {"config": mode.configuration([(setting, val)])}
 
-                if len(ip_values) == 0:
-                    args["mark_relative_to"] = mark_relative_to
+                # if len(ip_values) == 0:
+                #     args["mark_relative_to"] = mark_relative_to
 
                 if isinstance(setting, primitives.ProgrammablePin) and not is_ip_config:
                     args["include_zeros"] = True
 
-                return fuzz_enum_setting(empty_bitfile = empty_file, values = setting.values, get_sv_substs = subs_fn, **args)
+                await wrap_future(fuzz_enum_setting(empty_bitfile = empty_file, values = setting.values, get_sv_substs = subs_fn, **args))
             elif isinstance(setting, primitives.WordSetting):
                 def subs_fn(val):
                     return subs | {"config": mode.configuration([(setting, nonrouting.fuzz_intval(val))])}
 
-                return fuzz_word_setting(length=setting.bits, get_sv_substs=subs_fn, **args)
+                await wrap_future(fuzz_word_setting(length=setting.bits, get_sv_substs=subs_fn, **args))
             else:
                 raise Exception(f"Unknown setting type: {setting}")
 
-        return [map_mode_setting(s) for s in mode.settings]
+        await asyncio.gather(*[map_mode_setting(s) for s in mode.settings])
 
-    return [f for mode in primitives.primitives[site_type] for f in map_mode(mode)]
+    return await asyncio.gather(*[map_mode(mode) for mode in primitives.primitives[site_type]])
 
 async def run_for_device(device, executor = None):
     if not fuzzconfig.should_fuzz_platform(device):
@@ -259,7 +234,7 @@ async def run_for_device(device, executor = None):
 
             return await find_relevant_tiles_from_primitive(device, primitive, site, site_info, executor=executor)
 
-        return await find_relevant_tiles(device, site, site_type, site_info, executor=executor)
+        return [], [], []
 
     def should_skip_site(site, site_info):
         site_type = site_info["type"]
@@ -280,26 +255,18 @@ async def run_for_device(device, executor = None):
 
         site_type = site_info["type"]
 
-        logging.info(f"====== {site} : {driving_tiles} ==========")
         tiletype = driving_tiles[0].split(":")[1]
-
-        logging.info(f"====== {site} : {tiletype} ==========")
-        pips, local_graph = tiles.get_local_pips_for_site(device, site)
-
-        pips_future = list(map_local_pips(site, site_type, device, driving_tiles + site_tiles, pips, local_graph, executor=executor))
+        logging.info(f"====== {site} : {tiletype} {driving_tiles} ==========")
 
         # Map primitive parameter settings
-        settings_future = map_primitive_settings(device, driving_tiles + site_tiles, site, site_tiles, site_type, ip_values, executor = executor)
-
-        return [pips_future, settings_future]
+        await map_primitive_settings(device, driving_tiles + site_tiles, site, site_tiles, site_type, ip_values, executor = executor)
 
     sites = database.get_sites(device)
     sites_items = [(k,v) for k,v in sorted(sites.items()) if v["type"] not in ["CIBTEST", "SLICE"]]
 
     driving_tiles_futures = []
-    async with asyncio.TaskGroup() as tg:
-        for site, site_info in sites_items:
-            driving_tiles_futures.append(find_relevant_tiles_for_site(site, site_info, executor=executor))
+    for site, site_info in sites_items:
+        driving_tiles_futures.append(find_relevant_tiles_for_site(site, site_info, executor=executor))
 
     all_driving_tiles = await asyncio.gather(*driving_tiles_futures)
 
@@ -352,10 +319,9 @@ async def FuzzAsync(executor):
     if len(sys.argv) > 1 and sys.argv[1] not in all_sites:
         logging.warning(f"Site filter doesn't match any known sites")
         logging.info(sorted(all_sites))
+        return
 
-        return []
-
-    return await asyncio.gather(*[ run_for_device(device, executor) for device in devices ])
+    await asyncio.gather(*[ run_for_device(device, executor) for device in devices ])
 
 if __name__ == "__main__":
     fuzzloops.FuzzerAsyncMain(FuzzAsync)

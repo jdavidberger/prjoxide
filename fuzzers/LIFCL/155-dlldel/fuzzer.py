@@ -137,4 +137,5 @@ def main():
             lambda x: get_substs(kv=("CLKIN", x), mux=True), False)
     fuzzloops.parallel_foreach(configs, per_cfg)
 if __name__ == "__main__":
-    main()
+    fuzzloops.FuzzerMain(main)
+

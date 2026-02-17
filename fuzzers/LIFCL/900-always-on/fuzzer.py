@@ -16,7 +16,8 @@ def main():
         for cfg in cfgs:
             cfg.setup()
             empty = cfg.build_design(cfg.sv, {})
-            libpyprjoxide.add_always_on_bits(db, empty)
+            libpyprjoxide.add_always_on_bits(db, empty.bitstream)
 
 if __name__ == "__main__":
-    main()
+    fuzzloops.FuzzerMain(main)
+

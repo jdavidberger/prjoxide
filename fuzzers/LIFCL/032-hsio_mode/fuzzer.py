@@ -1,3 +1,5 @@
+import asyncio
+import hashlib
 import logging
 
 from fuzzconfig import FuzzConfig, should_fuzz_platform
@@ -36,7 +38,7 @@ def create_config_from_pad(pad, device):
         "|".join(neighbor_tile_types) + "-" + pio,
         (pio_names[pad["pio"]],
          pin,
-         FuzzConfig(job=f"IO{pin}_{tiletype}", device=device,
+         FuzzConfig(job=f"{pin}/{ts[0]}/{tiletype}", device=device,
                     tiles=ts + all_sysio))
     )
 
@@ -47,7 +49,7 @@ def create_configs_for_device(device):
     ]))
     return configs
 
-configs = (create_configs_for_device("LIFCL-33") | create_configs_for_device("LIFCL-40") ).values()
+configs = (create_configs_for_device("LIFCL-33") | create_configs_for_device("LIFCL-40") ).items()
 # + [
 #     ("A","V1", # PB6A
 #         FuzzConfig(job="IO5A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R56C6:SYSIO_B5_0", "CIB_R56C7:SYSIO_B5_1"])),
@@ -96,10 +98,11 @@ diffio_types = [
 
 device_empty_bitfile = {}
 
-def main(executor):
-    def per_config(config):
-        pio, site, cfg = config
+async def main(executor):
+    async def per_config(config):
+        overlay, (pio, site, cfg) = config
 
+        overlay_suffix = hashlib.sha1(overlay.encode()).hexdigest()
         (r,c) = tiles.get_rc_from_name(cfg.device, cfg.tiles[0])
 
         if f"R{r}C{c}_JPADDO_SEIO18_CORE_IO{pio}" not in tiles.get_full_node_set(cfg.device) and \
@@ -167,8 +170,9 @@ def main(executor):
             else:
                 all_di_types += ["{}_{}".format(di, t) for di in d]
 
+        futures = []
         def fuzz_enum_setting(*args, **kwargs):
-            nonrouting.fuzz_enum_setting(cfg, empty, executor=executor,*args, **kwargs)
+            futures.append(fuzzloops.wrap_future(nonrouting.fuzz_enum_setting(cfg, empty, executor=executor, overlay=overlay_suffix, *args, **kwargs)))
 
         fuzz_enum_setting("PIO{}.SEIO18.DRIVE_1V0".format(pio), ["2", "4"],
                                      lambda x: get_substs(iotype="OUTPUT_LVCMOS10H", kv=("DRIVE", x)), True)
@@ -241,8 +245,10 @@ def main(executor):
             fuzz_enum_setting("PIO{}.DIFFIO18.DIFFTX_INV".format(pio), ["NORMAL", "INVERT"],
                             lambda x: get_substs(iotype="OUTPUT_LVDS", kv=("DIFFTX_INV", x)), False)
 
+        await asyncio.gather(*futures)
+
     def cfg_filter(config):
-        pio, site, cfg = config
+        _, (pio, site, cfg) = config
         if not should_fuzz_platform(cfg.device):
             return False
 
@@ -254,8 +260,7 @@ def main(executor):
         
         return True
 
-    for config in filter(cfg_filter, configs):
-        per_config(config)
+    await asyncio.gather(*[per_config(config) for config in filter(cfg_filter, configs)])
 
 if __name__ == "__main__":
-    fuzzloops.FuzzerMain(main)
+    fuzzloops.FuzzerAsyncMain(main)

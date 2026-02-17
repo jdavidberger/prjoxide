@@ -8,6 +8,7 @@ import database
 from collections import defaultdict
 import tiles
 
+import fuzzloops
 # name max_row max_col
 
 configs = [
@@ -47,7 +48,7 @@ def main():
         # Determine branch driver locations
         test_row = 4
         clock_wires = ["R{}C{}_JCLK0".format(test_row, c) for c in range(1, max_col)]
-        clock_info = lapie.get_node_data(cfg.udb, clock_wires)
+        clock_info = lapie.get_node_data(cfg.device, clock_wires)
         branch_to_col = defaultdict(list)
         for n in clock_info:
             r, c = pos_from_name(n.name)
@@ -65,7 +66,7 @@ def main():
         branch_wires = [f"R{test_row}C{bc}_HPBX0000" for bc in sorted(branch_to_col.keys())]
         if name == "LIFCL-17":
             branch_wires.append("R{}C13_RHPBX0000".format(test_row))
-        branch_wire_info = lapie.get_node_data(cfg.udb, branch_wires)
+        branch_wire_info = lapie.get_node_data(cfg.device, branch_wires)
         branch_driver_col = {}
         # Branches directly driven by a VPSX
         # Also, get a test column for the spine exploration later
@@ -99,7 +100,7 @@ def main():
         # Spines
         sp_branch_wires = ["R{}C{}_HPBX0000".format(r, sp_test_col) for r in range(1, max_row)]
         spine_to_branch_row = {}
-        sp_info = lapie.get_node_data(cfg.udb, sp_branch_wires)
+        sp_info = lapie.get_node_data(cfg.device, sp_branch_wires)
         for n in sp_info:
             r, c = pos_from_name(n.name)
             vpsx_r = None
@@ -122,7 +123,7 @@ def main():
         # HROWs
         hrow_to_spine_col = {}
         spine_wires = ["R{}C{}_VPSX0000".format(sp_test_row, c) for c in sorted(set(branch_driver_col.values()))]
-        hr_info = lapie.get_node_data(cfg.udb, spine_wires)
+        hr_info = lapie.get_node_data(cfg.device, spine_wires)
         for n in hr_info:
             r, c = pos_from_name(n.name)
             hrow_c = None
@@ -141,5 +142,5 @@ def main():
         gdb["hrows"] = hrows
         save_db()
 if __name__ == '__main__':
-    main()
+    fuzzloops.FuzzerMain(main)
 

@@ -1,3 +1,5 @@
+import logging
+
 from fuzzconfig import FuzzConfig
 import nonrouting
 import fuzzloops
@@ -12,7 +14,7 @@ cfgs = [
     FuzzConfig(job="OSCMODE40", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R0C77:EFB_1_OSC"]),
 ]
 
-def main():
+def main(executor):
     for cfg in cfgs:
         cfg.setup()
         empty = cfg.build_design(cfg.sv, {})
@@ -28,6 +30,10 @@ def main():
             return val
 
         sites = tiles.get_sites_from_primitive(cfg.device, "OSC_CORE")
+        if len(sites) == 0:
+            logging.error(f"No OSC_CORE's defined for {cfg.device}")
+            continue
+
         site = list(sites.keys())[0]
         
         def get_substs(mode="NONE", default_cfg=False, kv=None, mux=False):
@@ -104,4 +110,4 @@ def main():
 
         
 if __name__ == '__main__':
-    main()
+    fuzzloops.FuzzerMain(main)

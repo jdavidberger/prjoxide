@@ -1,3 +1,5 @@
+import asyncio
+
 from fuzzconfig import FuzzConfig
 import nonrouting
 import fuzzloops
@@ -64,8 +66,8 @@ configs = create_cfgs("LIFCL-33") + [
 
 ]
 
-def main():
-    def per_config(x):
+async def main(executor):
+    async def per_config(x):
         site, prim, cfg = x
         cfg.setup()
         empty = cfg.build_design(cfg.sv, {})
@@ -101,25 +103,34 @@ def main():
                     x |= (1 << i)
             return x
 
-        nonrouting.fuzz_word_setting(cfg, "{}.DELAY.DEL_VALUE".format(prim), 7,
+        futures = []
+        def fuzz_enum_setting(*args, **kwargs):
+            futures.append(fuzzloops.wrap_future(nonrouting.fuzz_enum_setting(cfg, empty, *args, **kwargs,executor=executor)))
+
+        def fuzz_word_setting(*args, **kwargs):
+            futures.append(fuzzloops.wrap_future(nonrouting.fuzz_word_setting(cfg, *args, **kwargs,executor=executor)))
+
+        fuzz_word_setting("{}.DELAY.DEL_VALUE".format(prim), 7,
                 lambda x : get_substs(kv=("DEL_VALUE", str(intval(x)))),
                 desc="initial fine delay value")
 
-        nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.COARSE_DELAY".format(prim), ["0NS", "0P8NS", "1P6NS"],
+        fuzz_enum_setting("{}.DELAY.COARSE_DELAY".format(prim), ["0NS", "0P8NS", "1P6NS"],
             lambda x: get_substs(kv=("COARSE_DELAY", x)), False)
         if not s:
-            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.COARSE_DELAY_MODE".format(prim), ["DYNAMIC", "STATIC"],
+            fuzz_enum_setting("{}.DELAY.COARSE_DELAY_MODE".format(prim), ["DYNAMIC", "STATIC"],
                 lambda x: get_substs(kv=("COARSE_DELAY_MODE", x)), False)
-            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.EDGE_MONITOR".format(prim), ["ENABLED", "DISABLED"],
+            fuzz_enum_setting("{}.DELAY.EDGE_MONITOR".format(prim), ["ENABLED", "DISABLED"],
                 lambda x: get_substs(kv=("EDGE_MONITOR", x)), False)
-            nonrouting.fuzz_enum_setting(cfg, empty, "{}.DELAY.WAIT_FOR_EDGE".format(prim), ["ENABLED", "DISABLED"],
+            fuzz_enum_setting("{}.DELAY.WAIT_FOR_EDGE".format(prim), ["ENABLED", "DISABLED"],
                 lambda x: get_substs(kv=("WAIT_FOR_EDGE", x)), False)
 
             for pin in ["CIBCRS0", "CIBCRS1", "RANKSELECT", "RANKENABLE", "RANK0UPDATE", "RANK1UPDATE"]:
-                nonrouting.fuzz_enum_setting(cfg, empty, "{}.{}MUX".format(prim, pin), ["OFF", pin],
-                    lambda x: get_substs(kv=(pin, x), mux=True), False)
+                fuzz_enum_setting("{}.{}MUX".format(prim, pin), ["OFF", pin],
+                    lambda x, pin=pin: get_substs(kv=(pin, x), mux=True), False)
 
-    fuzzloops.parallel_foreach(configs, per_config)
+        await asyncio.gather(*futures)
+
+    await asyncio.gather(*[per_config(c) for c in configs])
 
 if __name__ == "__main__":
-    main()
+    fuzzloops.FuzzerAsyncMain(main)
