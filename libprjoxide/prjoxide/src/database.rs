@@ -315,7 +315,7 @@ pub struct TileBitsDatabase {
     // Tiletype and relative offset for the tiles that this tiletype configures -- that is, changes in
     // this tiles bits reflect a change in either pips or primitives in the other tile.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
-    pub tile_configures_external_tiles : BTreeSet<(String, i32, i32)>,
+    pub tile_configures_external_tiles : BTreeSet<(i32, i32)>,
 }
 
 impl TileBitsDatabase {
@@ -354,7 +354,6 @@ impl TileBitsData {
 
         self.db.conns.iter_mut().for_each(|(_,conn)| conn.sort());
         self.db.pips.iter_mut().for_each(|(_,pip)| pip.sort());
-        self.db.words.iter_mut().for_each(|(_,word)| word.bits.sort());
     }
 
     pub fn new(tiletype: &str, db: TileBitsDatabase) -> TileBitsData {
@@ -483,7 +482,7 @@ impl TileBitsData {
         Ok(())
     }
 
-    pub fn set_bel_offset(&mut self, bel_relative_location : Option<(String, i32, i32)>) -> Result<(), String> {
+    pub fn set_bel_offset(&mut self, bel_relative_location : Option<(i32, i32)>) -> Result<(), String> {
         if !self.db.tile_configures_external_tiles.is_empty() &&
             self.db.tile_configures_external_tiles.iter().next() != bel_relative_location.as_ref() {
             emit_bit_change_error!(
@@ -864,30 +863,10 @@ impl Database {
 
         for layer in overlay_members {
             info!("Merging {layer} into {tiletype}");
-
-            let overlay_tiletypes = self.overlay_tiletypes.clone();
             let overlay_bits = self.tile_bitdb(family, layer.as_str());
-
-            if !layer.starts_with("overlay") {
-                for (to, from_wires) in &overlay_bits.db.pips {
-                    for from_data in from_wires {
-                        let from_wire = &from_data.from_wire;
-
-                        if tile_bits.find_pip_data(from_wire, to).is_none() {
-                            let indicated_tiles : Vec<_> = overlay_tiletypes.iter().flat_map(|(_, tilemaps)| {
-                                    tilemaps.iter().filter(move |(_, tiletypename)| {
-                                        tiletypename == &tiletype
-                                    }).map(|x| x.0.clone())
-                                }).collect();
-                            warn!("Ignoring PIP data {from_wire} -> {to} from {layer} for {tiletype}. Used in {indicated_tiles:?}")
-                        }
-                    }
-                }
-                tile_bits.merge_configs(&overlay_bits.db)?;
-            } else {
-                tile_bits.merge(&overlay_bits.db)?;
-            }
+            tile_bits.merge(&overlay_bits.db)?;
         }
+
         Ok(tile_bits)
     }
     // Bit database for a tile by family and tile type

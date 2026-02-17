@@ -17,6 +17,10 @@ from threading import Thread, RLock
 
 import lapie
 
+async def wrap_future(f):
+    if f is not None:
+        await asyncio.wrap_future(f)
+
 is_in_loop = False
 
 def jobs():
@@ -54,7 +58,6 @@ def parallel_foreach(items, func, jobs = None):
     items_lock = RLock()
 
     exception = None
-    print(f"Starting loop with {exception} jobs")
 
     global is_in_loop
     is_in_loop = True
@@ -68,14 +71,13 @@ def parallel_foreach(items, func, jobs = None):
                         return
                     item = items_queue[0]
                     items_queue.pop(0)
-                    print(f"{len(items_queue)} jobs remaining")
 
                 func(item)
         except Exception as e:
             global error_count
             if error_count < 10:
                 error_count = error_count + 1
-                print(f"Error: {e}")
+                logging.error(f"Error: {e}")
                 traceback.print_exc()
             
             exception = e
@@ -133,7 +135,7 @@ def gather_futures(futures, name = None):
         else:
             _done(i, fut)
 
-    if executor is not None:
+    if executor is not None and hasattr(executor, "register_future"):
         executor.register_future(out)
 
     if name is not None:
@@ -271,10 +273,11 @@ def FuzzerAsyncMain(f, *args, **kwargs):
             signal.signal(sig, sighandler)
 
         try:
+            FUZZER_TITLE = os.environ.get("FUZZER_TITLE", "")
             def status_panel(status: str) -> Panel:
                 return Panel(
                     f"[bold cyan]{status}[/bold cyan]",
-                    title="Status",
+                    title=f"Status - {FUZZER_TITLE}",
                     border_style="blue",
                     height=3,
                 )
@@ -328,7 +331,7 @@ def FuzzerAsyncMain(f, *args, **kwargs):
                     traceback.print_exception(e)
                     raise
                 finally:
-                    print("Exit ui thread")
+                    logging.info("Exit ui thread")
 
 
             with Executor() as executor:
@@ -379,6 +382,8 @@ def FuzzerAsyncMain(f, *args, **kwargs):
 
 def FuzzerMain(f):
     async def async_main(executor):
-        return f(executor)
+        if f.__code__.co_argcount > 0:
+            return f(executor)
+        return f()
 
     FuzzerAsyncMain(async_main)

@@ -17,6 +17,7 @@ use pyo3::wrap_pyfunction;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::*;
+use prjoxide::chip::ChipDelta;
 
 #[pyclass]
 struct Database {
@@ -175,7 +176,8 @@ impl Fuzzer {
         desc: &str,
         include_zeros: bool,
         assume_zero_base: bool,
-        mark_relative_to: Option<String>
+        mark_relative_to: Option<String>,
+        overlay: &str
     ) -> Fuzzer {
         let base_chip = bitstream::BitstreamParser::parse_file(&mut db.db, base_bitfile).unwrap();
 
@@ -190,7 +192,8 @@ impl Fuzzer {
                 desc,
                 include_zeros,
                 assume_zero_base,
-                mark_relative_to
+                mark_relative_to,
+                overlay
             ),
             name: name.to_string()
         }
@@ -221,6 +224,9 @@ impl Fuzzer {
 
     fn add_enum_sample(&mut self, db: &mut Database, option: &str, base_bitfile: &str) {
         self.fz.add_enum_sample(&mut db.db, option, base_bitfile);
+    }
+    fn add_enum_delta(&mut self, db: &mut Database, option: &str, delta: ChipDelta) {
+        self.fz.add_enum_delta(option, delta);
     }
 
     fn solve(&mut self, db: &mut Database, py: Python) {

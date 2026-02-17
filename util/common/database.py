@@ -1,6 +1,7 @@
 """
 Database and Database Path Management
 """
+import logging
 import os
 from functools import lru_cache, cache
 from os import path, makedirs
@@ -36,6 +37,7 @@ def get_cache_dir():
     makedirs(path, exist_ok=True)
     return path
 
+@cache
 def get_db_root():
     """
     Return the path containing the Project Oxide database
@@ -43,10 +45,10 @@ def get_db_root():
     variable is set to another value.
     """
     if "PRJOXIDE_DB" in os.environ and os.environ["PRJOXIDE_DB"] != "":
+        logging.info(f"Using external database path {os.environ['PRJOXIDE_DB']}")
         return os.environ["PRJOXIDE_DB"]
     else:
         return path.join(get_oxide_root(), "database")
-
 
 def get_db_subdir(family = None, device = None, package = None):
     """

@@ -18,8 +18,7 @@ import tiles
 import database
 import fuzzconfig
 import fuzzloops
-from DesignFileBuilder import get_wires_delta, DesignsForPips, BitConflictException
-
+from DesignFileBuilder import get_wires_delta, DesignsForPips, BitConflictException, create_wires_file
 
 def make_dict_of_lists(lst, key = None):
     if key is None:
@@ -113,20 +112,18 @@ def fuzz_interconnect_sinks(
     if not isinstance(sinks, dict):
         sinks = pips_to_sinks(sinks)
 
-    base_bitf_future = config.build_design_future(executor, config.sv, extra_substs, "base_")
-
     assert(len(config.tiles) > 0)
 
     def process_bits(bitstreams, from_wires, to_wire):
         base_bitf = bitstreams[0]
-        bitstreams = bitstreams[1:]
+        bitstreams = [b.bitstream if b is not None else None for b in bitstreams[1:]]
 
         with fuzzconfig.db_lock() as db:
-            fz = libpyprjoxide.Fuzzer.pip_fuzzer(db, base_bitf, set(config.tiles), to_wire,
+            fz = libpyprjoxide.Fuzzer.pip_fuzzer(db, base_bitf.bitstream, set(config.tiles), to_wire,
                                                  config.tiles[0],
                                                  set(ignore_tiles), full_mux_style, not (fc_filter(to_wire)))
 
-            pip_samples = [(from_wire, arc_bit if arc_bit is not None else base_bitf) for (from_wire, arc_bit) in zip(from_wires, bitstreams)]
+            pip_samples = [(from_wire, arc_bit if arc_bit is not None else base_bitf.bitstream) for (from_wire, arc_bit) in zip(from_wires, bitstreams)]
             fz.add_pip_samples(db, pip_samples)
 
             logging.debug(f"Solving for {to_wire}")
@@ -145,6 +142,8 @@ def fuzz_interconnect_sinks(
 
     with fuzzloops.Executor(executor) as executor:
         futures = []
+
+        base_bitf_future = config.build_design_future(executor, config.sv, extra_substs, "base_")
 
         for to_wire in sinks:
             if config.check_deltas(to_wire):
@@ -248,7 +247,7 @@ def fuzz_interconnect_pins(config, site_name, extra_substs = {}, full_mux_style 
         prefix = "{}_{}_{}_".format(config.job, config.device, to_wire)
 
         with fuzzconfig.db_lock() as db:
-            fz = libpyprjoxide.Fuzzer.pip_fuzzer(db, base_bitf,
+            fz = libpyprjoxide.Fuzzer.pip_fuzzer(db, base_bitf.bitstream,
                                                  set(config.tiles),
                                                  to_wire,
                                                  config.tiles[0], set(), full_mux_style, not (fc_filter(to_wire)))
@@ -261,7 +260,7 @@ def fuzz_interconnect_pins(config, site_name, extra_substs = {}, full_mux_style 
 
             print(f"Building design for ({config.job} {config.device}) {to_wire} to {from_wire}")
             arc_bit = config.build_design(config.sv, substs, prefix)
-            fz.add_pip_sample(db, from_wire, arc_bit)
+            fz.add_pip_sample(db, from_wire, arc_bit.bitstream)
 
         config.solve(fz, db)
 

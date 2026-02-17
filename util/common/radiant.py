@@ -44,7 +44,7 @@ def run_bash_script(env, *args, cwd = None, stdout = subprocess.PIPE, stderr = s
 
 
         if returncode != 0:
-            raise RadiantRunError(f"Error encountered running radiant: {slug} {returncode}", error_lines)
+            raise RadiantRunError(f"Error encountered running radiant: {slug} {returncode} cwd: {cwd}", error_lines)
 
     # try:
     #     loop = asyncio.get_running_loop()

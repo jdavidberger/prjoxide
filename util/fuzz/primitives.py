@@ -226,7 +226,7 @@ lram_core = PrimitiveDefinition(
         ProgrammablePin("RSTA", ["#SIG", "#INV"], desc="LRAM RSTA inversion control", primitive="LRAM_CORE"),
         ProgrammablePin("RSTB", ["#SIG", "#INV"], desc="LRAM RSTB inversion control", primitive="LRAM_CORE"),
         ProgrammablePin("WEA", ["#SIG", "#INV"], desc="LRAM WEA inversion control", primitive="LRAM_CORE"),
-        ProgrammablePin("WEB", ["#SIG", "#INV"], desc="LRAM WEB inversion control", primitive="LRAM_CORE"),
+        #ProgrammablePin("WEB", ["#SIG", "#INV"], desc="LRAM WEB inversion control", primitive="LRAM_CORE"),
     ]
 )
 
@@ -352,6 +352,7 @@ pll_core = PrimitiveDefinition.parse_primitive_json("PLL", core_suffix=True)
 for s in pll_core.settings:
     if s.name.startswith("ENCLK_"):
         s.enable_value = "ENABLED"
+pll_core.settings = [s for s in pll_core.settings if s.name != "CONFIG_WAIT_FOR_LOCK"]
 pll_core.pins = [
     PinSetting(name="INTFBK0", dir="out", desc="", bits=None),
     PinSetting(name="INTFBK1", dir="out", desc="", bits=None),

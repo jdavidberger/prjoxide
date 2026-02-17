@@ -31,6 +31,7 @@ pub enum FuzzMode {
         disambiguate: bool,  // add explicit 0s to disambiguate settings only
         assume_zero_base: bool,
         mark_relative_to: Option<String>, // Track relative to this tile
+        overlay: String
     }
 }
 
@@ -100,7 +101,8 @@ impl Fuzzer {
         desc: &str,
         include_zeros: bool,
         assume_zero_base: bool,
-        mark_relative_to: Option<String>
+        mark_relative_to: Option<String>,
+        overlay: &str
     ) -> Fuzzer {
         Fuzzer {
             mode: FuzzMode::Enum {
@@ -108,7 +110,8 @@ impl Fuzzer {
                 include_zeros,
                 disambiguate: false, // fixme
                 assume_zero_base,
-                mark_relative_to
+                mark_relative_to,
+                overlay: overlay.to_string(),
             },
             tiles: fuzz_tiles.clone(),
             base: base_bit.clone(),
@@ -174,6 +177,19 @@ impl Fuzzer {
     pub fn add_word_sample(&mut self, db: &mut Database, index: usize, bitfile: &str) {
         self.add_sample(db, FuzzKey::WordKey { bit: index }, bitfile);
     }
+    pub fn add_word_delta(&mut self, index: usize, delta : ChipDelta) {
+        self.add_sample_delta( FuzzKey::WordKey { bit: index }, delta);
+    }
+
+    pub fn add_enum_delta(&mut self, option: &str, delta: ChipDelta) {
+        self.add_sample_delta(
+            FuzzKey::EnumKey {
+                option: option.to_string(),
+            },
+            delta
+        );
+    }
+
     pub fn add_enum_sample(&mut self, db: &mut Database, option: &str, bitfile: &str) {
         self.add_sample(
             db,
@@ -377,7 +393,8 @@ impl Fuzzer {
                 include_zeros,
                 disambiguate: _,
                 assume_zero_base,
-                mark_relative_to
+                mark_relative_to,
+                overlay
             } => {
                 if self.deltas.len() < 2 {
                     warn!("Need at least two deltas got {} for fuzzmode {name}", self.deltas.len());
@@ -459,18 +476,25 @@ impl Fuzzer {
                                     };
                                     // Add the enum to the tile data
                                     let tile_data = self.base.tile_by_name(&tile).unwrap();
-                                    info!("Resolved {} {} {:?} {}", name, option, b, &tile_data.tiletype);
+
+                                    let tiletype = &tile_data.tiletype;
+                                    let tiletype_or_overlay = if overlay.is_empty() {
+                                        tiletype.clone()
+                                    } else {
+                                        format!("overlay/{}-{}", tiletype, overlay)
+                                    };
+                                    
+                                    info!("Resolved {} {} {:?} {}", name, option, b, tiletype_or_overlay);
 
                                     let tile_db =
-                                        db.tile_bitdb(&self.base.family, &tile_data.tiletype);
+                                        db.tile_bitdb(&self.base.family, &tiletype_or_overlay);
 
                                     tile_db.add_enum_option(&name, &option, &self.desc, b).unwrap();
 
                                     if let Some(relative_tile) = mark_relative_to.clone() {
                                         let ref_tile = self.base.tile_by_name(&relative_tile).unwrap();
                                         let offset = {
-                                            (ref_tile.tiletype.clone(),
-                                             ref_tile.x as i32 - tile_data.x as i32,
+                                            (ref_tile.x as i32 - tile_data.x as i32,
                                              ref_tile.y as i32 - tile_data.y as i32)
                                         };
 

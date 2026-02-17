@@ -110,11 +110,12 @@ def read_design_template(des_template):
 class BitstreamInfo:
     def __init__(self, config, bitstream_file, vfiles):
         self.config = config
+        assert isinstance(bitstream_file, str)
         self.bitstream = bitstream_file
         self.vfiles = vfiles
 
     def __str__(self):
-        return self.bitstream
+        return f"BitstreamInfo: {self.bitstream}"
 
 
 class FuzzConfig:
@@ -229,6 +230,7 @@ class FuzzConfig:
         return future
 
     def build_design(self, des_template, substitutions = {}, prefix="", substitute=True, executor = None):
+        assert ' ' not in prefix
         """
         Run Radiant on a given design template, applying a map of substitutions, plus some standard substitutions
         if not overriden.
@@ -239,7 +241,6 @@ class FuzzConfig:
 
         Returns the path to the output bitstream
         """
-        logging.debug(f"Building {des_template} with subs {substitutions}")
         subst = dict(substitutions)
 
         prefix = f"{threading.get_ident()}/{prefix}/"
@@ -253,6 +254,7 @@ class FuzzConfig:
 
         bitfile = path.join(self.workdir, prefix + "design.bit")
         bitfile_gz = path.join(self.workdir, prefix + "design.bit.gz")
+        logging.debug(f"Building {des_template} with subs {substitutions} into {desfile}")
 
         if "sysconfig" in subst:
             pdcfile = path.join(self.workdir, prefix + "design.pdc")
@@ -307,7 +309,7 @@ class FuzzConfig:
 
             error_output = process_results.stderr.decode().strip()
             if "ERROR <" in error_output:
-                raise Exception(f"Error found during bitstream build: {error_output}")
+                raise Exception(f"Error found during bitstream build: {error_output} (Args: {self.device} {desfile})")
 
             if self.struct_mode and self.udb_specimen is None:
                 self.udb_specimen = path.join(self.workdir, prefix + "design.tmp", "par.udb")

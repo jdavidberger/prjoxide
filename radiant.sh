@@ -96,7 +96,7 @@ else
 		MAP_PDC=""
 	fi
 	"$fpgabindir"/map -o map.udb synth.udb $MAP_PDC
-	"$fpgabindir"/par map.udb par.udb
+	"$fpgabindir"/par map.udb -w par.udb
 	fi
 
 	if [ -n "$GEN_RBF" ]; then

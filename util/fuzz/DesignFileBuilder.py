@@ -14,6 +14,45 @@ from os import path
 
 workdir = tempfile.mkdtemp()
 
+def create_design_file(config, elements, prefix = "", executor = None):
+    if executor is not None:
+        future = executor.submit(create_wires_file, config, elements, prefix)
+        future.name = f"Build {config.device}"
+        future.executor = executor
+        return future
+
+    all_outputs = [o for _, os, _ in elements for o in os]
+    all_inputs = [i for ins, _, _ in elements for i in ins]
+
+    blurb_text = "\n".join([b for _, _, b in elements])
+
+    subst = config.subst_defaults()
+    arch = config.device.split("-")[0]
+    device = config.device
+    package = subst["package"]
+    speed_grade = subst["speed_grade"]
+
+    outputs = ", ".join([f"output wire q_{o}" for o in all_outputs])
+    input_ties = "\n".join([f"VHI vhi_i_{i}(.Z(q_{i}));" for i in all_inputs])
+
+    source = f"""\
+    (* \\db:architecture ="{arch}", \\db:device ="{device}", \\db:package ="{package}", \\db:speed ="{speed_grade}_High-Performance_1.0V", \\db:timestamp = 0, \\db:view ="physical" *)
+    module top ({outputs});
+    {input_ties}
+    {blurb_text}
+        	(* \\xref:LOG ="q_c@0@0" *)
+    	VHI vhi_i();        
+    endmodule        
+            """
+    h = abs(hash(source))
+    vfile = path.join(workdir, f"{config.device}/{prefix}{config.job}-{h}.v")
+    Path(vfile).parent.mkdir(parents=True, exist_ok=True)
+
+    with open(vfile, 'w') as f:
+        f.write(source)
+
+    return config.build_design(vfile, prefix=prefix)
+
 def create_wires_file(config, wires, prefix = "", executor = None):
     if executor is not None:
         future = executor.submit(create_wires_file, config, wires, prefix)

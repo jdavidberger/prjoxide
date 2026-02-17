@@ -32,6 +32,7 @@ class NodesDatabase:
 
     def __init__(self, device):
         import database
+
         self.write_lock = NodesDatabase._write_locks[device]
         self.db_path = f"{database.get_cache_dir()}/{device}-nodes.sqlite"
         logging.debug(f"Opening node database at {self.db_path} thread: {threading.get_ident()}")

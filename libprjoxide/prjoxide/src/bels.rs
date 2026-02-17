@@ -804,7 +804,7 @@ pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
         "MIPI_DPHY_1" => vec![Bel::make_dphy_core("TDPHY_CORE26", &tiledata, -2, 0)],
         "MIB_T_TAP" | "TAP_CIBT" | "TAP_CIB" | "TAP_PLC" | "CIB" | "MIB_LR" => vec![], // Silence warnings
         _ => {
-            let bel_relative_location = tiledata.tile_configures_external_tiles.iter().next().cloned().unwrap_or(("".to_string(), 0, 0));
+            let bel_relative_location = tiledata.tile_configures_external_tiles.iter().next().cloned().unwrap_or((0, 0));
 
             let enum_bels = tiledata.enums.iter().flat_map(|(key, _value)|match key.as_str() {
                 "PIOA.BASE_TYPE" => vec![Bel::make_seio33(0)],
@@ -819,7 +819,7 @@ pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
                 "IOLOGICB.GSR" => vec![Bel::make_iol(tiledata, false, 1)],
                 _ => vec![]
             }).map(|x| {
-                x.with_rel((bel_relative_location.1, bel_relative_location.2))
+                x.with_rel(bel_relative_location)
             });
             let inferred_bels = enum_bels.collect_vec();
             if inferred_bels.is_empty() {
@@ -831,7 +831,7 @@ pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
 }
 
 // Get the tiles that a bel's configuration might be split across
-pub fn get_bel_tiles(chip: &Chip, tile: &Tile, bel: &Bel, rel: &Option<(String, i32, i32)>) -> Vec<String> {
+pub fn get_bel_tiles(chip: &Chip, tile: &Tile, bel: &Bel, rel: &Option<(i32, i32)>) -> Vec<String> {
     let tn = tile.name.to_string();
     let rel_tile = |dx: i32, dy: i32, tt: &str| {
         chip.tile_by_xy_type((tile.x as i32 + dx).try_into().unwrap(),
@@ -849,20 +849,18 @@ pub fn get_bel_tiles(chip: &Chip, tile: &Tile, bel: &Bel, rel: &Option<(String, 
         warn!("no tile matched prefix ({}, {}, {}) for {}", nx, ny, tt_prefix, tile.name);
         "".to_string()
     };
-    let rel_tile_suffix = |dx, dy, tt_suffix| {
+    let rel_tile_suffix = |dx, dy| {
         let nx = tile.x.checked_add_signed(dx).unwrap();
         let ny = tile.y.checked_add_signed(dy).unwrap();
         for tile in chip.tiles_by_xy(nx, ny).iter() {
-            if tile.tiletype.ends_with(tt_suffix) {
-                return tile.name.to_string();
-            }
+            return tile.name.to_string();
         }
-        warn!("no tile matched suffix ({}, {}, {}) for {}", nx, ny, tt_suffix, tile.name);
+        warn!("no tile matched suffix ({}, {}) for {}", nx, ny, tile.name);
         "".to_string()
     };
 
     if let Some(rel_offset) = rel {
-        return vec![rel_tile_suffix(rel_offset.1, rel_offset.2, "")];
+        return vec![rel_tile_suffix(rel_offset.0, rel_offset.1)];
     }
 
     let tt = &tile.tiletype[..];
@@ -883,7 +881,7 @@ pub fn get_bel_tiles(chip: &Chip, tile: &Tile, bel: &Bel, rel: &Option<(String, 
             0 => vec![rel_tile(0, 0, "EBR_1"), rel_tile(1, 0, "EBR_2")],
             1 => vec![rel_tile(0, 0, "EBR_4"), rel_tile(1, 0, "EBR_5")],
             2 => vec![rel_tile(0, 0, "EBR_7"), rel_tile(1, 0, "EBR_8")],
-            3 => vec![rel_tile(0, 0, "EBR_9"), rel_tile_suffix(1, 0, "EBR_10")],
+            3 => vec![rel_tile(0, 0, "EBR_9"), rel_tile_suffix(1, 0)],
             _ => panic!("unknown EBR z-index")
         }
         "PREADD9_CORE" | "MULT9_CORE" | "MULT18_CORE" | "REG18_CORE" |

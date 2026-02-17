@@ -334,7 +334,7 @@ async def get_pip_data(device, nodes, filter_type = None):
     db = NodesDatabase.get(device)
     return db.get_pips(nodes, filter_type = filter_type)
 
-def get_node_data(udb, nodes, regex=False, executor = None, filter_by_name=True, skip_missing = False, skip_pips=False):
+def get_node_data(device, nodes, regex=False, executor = None, filter_by_name=True, skip_missing = False, skip_pips=False):
     from nodes_database import NodesDatabase
     import fuzzloops
 
@@ -344,17 +344,17 @@ def get_node_data(udb, nodes, regex=False, executor = None, filter_by_name=True,
         nodes = sorted(set(nodes))
 
     if regex:
-        all_nodes = get_full_node_list(udb)
+        all_nodes = get_full_node_list(device)
         regex = [re.compile(n) for n in nodes]
         nodes = sorted(set([n for n in all_nodes if any([r for r in regex if r.search(n) is not None])]))
     elif filter_by_name:
-        all_nodes = get_full_node_list(udb)
+        all_nodes = get_full_node_list(device)
         nodes = sorted(set(nodes) & all_nodes)
 
     if len(nodes) == 0:
         return []
 
-    db = NodesDatabase.get(udb)
+    db = NodesDatabase.get(device)
     t = time.time()
     nis = db.get_node_data(nodes, skip_pips=skip_pips)
     logging.debug(f"Looked up {len(nis)} records in {time.time() - t} sec")
@@ -368,12 +368,12 @@ def get_node_data(udb, nodes, regex=False, executor = None, filter_by_name=True,
         with fuzzloops.Executor(executor) as local_executor:
             def lapie_get_node_data(query):
                 s = time.time()
-                nodes = _get_node_data(udb, query)
+                nodes = _get_node_data(device, query)
                 logging.debug(f"{len(query)} N {len(query) / (time.time() - s)} N/sec ({(time.time() - s)} deltas)")
                 return nodes
 
             def integrate_nodes(nodes):
-                db = NodesDatabase.get(udb)
+                db = NodesDatabase.get(device)
                 try:
                     db.insert_nodeinfos(nodes)
                 except sqlite3.OperationalError as e:
