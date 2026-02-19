@@ -3,7 +3,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from cffi.model import PrimitiveType
-
+import logging
 
 class PrimitiveSetting:
     def __init__(self, name, desc, depth=3, enable_value=None):
@@ -140,9 +140,7 @@ class PrimitiveDefinition(object):
     def parse_primitive_json(primitive, site_type=None, core_suffix=True, mode = None, value_sizes={}):
         import database
 
-        fn = database.get_oxide_root() + f"/tools/primitives/{primitive}.json"
-        with open(fn) as f:
-            parsed = json.load(f)
+        parsed = database.get_primitive_json(primitive)
 
         if core_suffix and site_type is None:
             primitive = primitive + "_CORE"
@@ -154,6 +152,10 @@ class PrimitiveDefinition(object):
             values = s.get("Value", s.get("Values"))
             name = s.get("Name", s.get("Attribute"))
 
+            if values is None:
+                logging.warn(f"No values for {primitive}")
+                return None
+
             if len(values) == 1 and name in value_sizes:
                 return WordSetting(name, value_sizes[name], desc=name, default=int(values[0]))
 
@@ -161,7 +163,7 @@ class PrimitiveDefinition(object):
                 bit_cnt = len(values[0].replace("`", "").split(" ")[0].split("0b")[-1])
                 return WordSetting(name, bit_cnt, desc=name, number_formatter=WordSetting.binary_formatter)
 
-            return EnumSetting(name, values, desc=str(s.get("Description")), default=values[0])
+            return EnumSetting(name, values, desc=str(s.get("Description", "")), default=values[0])
 
         parameters_key = "Parameters"
         if parameters_key not in parsed:
@@ -191,7 +193,7 @@ class PrimitiveDefinition(object):
             site_type=site_type if site_type else mode,
             settings=[create_setting(s) for s in parsed[parameters_key]],
             pins=pins,
-            desc=parsed["description"],
+            desc=parsed.get("description", ""),
             mode=mode,
             primitive=primitive
         )
@@ -292,52 +294,38 @@ osc_core = PrimitiveDefinition(
 oscd_core = PrimitiveDefinition(
     "OSCD_CORE",
     settings=[
-        EnumSetting("DTR_EN", ["ENABLED", "DISABLED"],
-                    desc="DTR block enable from MIB"),
+        EnumSetting("DTR_EN", ["ENABLED", "DISABLED"]),
 
-        WordSetting("HF_CLK_DIV", 8, default=1,
-                    desc="HF oscillator user output divider (div2–div256)"),
+        WordSetting("HF_CLK_DIV", 8, default=1),
 
-        WordSetting("HF_SED_SEC_DIV", 8,
-                    desc="HF oscillator SED/secondary divider (div2–div256)"),
+        WordSetting("HF_SED_SEC_DIV", 8),
 
-        EnumSetting("HF_FABRIC_EN", ["ENABLED", "DISABLED"],
-                    desc="HF oscillator trim source mux select"),
+        EnumSetting("HF_FABRIC_EN", ["ENABLED", "DISABLED"]),
 
         EnumSetting("HF_OSC_EN", ["ENABLED", "DISABLED"],
-                    desc="HF oscillator enable", default="ENABLED", enable_value="ENABLED"),
+                    default="ENABLED", enable_value="ENABLED"),
 
-        EnumSetting("LF_FABRIC_EN", ["ENABLED", "DISABLED"],
-                    desc="LF oscillator trim source mux select"),
+        EnumSetting("LF_FABRIC_EN", ["ENABLED", "DISABLED"]),
 
-        EnumSetting("LF_OUTPUT_EN", ["ENABLED", "DISABLED"],
-                    desc="LF clock output enable"),
+        EnumSetting("LF_OUTPUT_EN", ["ENABLED", "DISABLED"]),
 
-        EnumSetting("DEBUG_N", ["ENABLED", "DISABLED"],
-                    desc="Ignore SLEEP/STOP during USER mode when disabled"),
+        EnumSetting("DEBUG_N", ["ENABLED", "DISABLED"]),
     ],
     pins=[
-        PinSetting("HFOUTEN", dir="in",
-                   desc="HF clock (225MHz) output enable (test only)"),
-        PinSetting("HFSDSCEN", dir="in",
-                   desc="HF user clock output enable"),
-        PinSetting("HFOUTCIBEN", dir="in",
-                   desc="CIB control to enable/disable HF oscillator during user mode"),
-        PinSetting("REBOOT", dir="in",
-                   desc="CIB control to enable/disable hf_clk_config output"),
-        PinSetting("HFCLKOUT", dir="out",
-                   desc="450MHz with programmable divider (2–256) to user"),
-        PinSetting("LFCLKOUT", dir="out",
-                   desc="Low frequency clock output after div4 (32kHz)"),
-        PinSetting("HFCLKCFG", dir="out",
-                   desc="450MHz clock to configuration block"),
-        PinSetting("HFSDCOUT", dir="out",
-                   desc="450MHz with programmable divider (2–256) to configuration"),
+        PinSetting("HFOUTEN", dir="in"),
+        PinSetting("HFSDSCEN", dir="in"),
+        PinSetting("HFOUTCIBEN", dir="in"),
+        PinSetting("REBOOT", dir="in"),
+        PinSetting("HFCLKOUT", dir="out"),
+        PinSetting("LFCLKOUT", dir="out"),
+        PinSetting("HFCLKCFG", dir="out"),
+        PinSetting("HFSDCOUT", dir="out"),
     ],
 )
 
 dcc = PrimitiveDefinition.parse_primitive_json("DCC", core_suffix=False)
 dcc.get_setting("DCCEN").enable_value = "1"
+dcc.settings[0].desc = "DCC bypassed (0) or used as gate (1)"
 
 PrimitiveDefinition(
     "DCS",
@@ -354,64 +342,64 @@ for s in pll_core.settings:
         s.enable_value = "ENABLED"
 pll_core.settings = [s for s in pll_core.settings if s.name != "CONFIG_WAIT_FOR_LOCK"]
 pll_core.pins = [
-    PinSetting(name="INTFBK0", dir="out", desc="", bits=None),
-    PinSetting(name="INTFBK1", dir="out", desc="", bits=None),
-    PinSetting(name="INTFBK2", dir="out", desc="", bits=None),
-    PinSetting(name="INTFBK3", dir="out", desc="", bits=None),
-    PinSetting(name="INTFBK4", dir="out", desc="", bits=None),
-    PinSetting(name="INTFBK5", dir="out", desc="", bits=None),
-    PinSetting(name="LMMIRDATA", dir="out", desc="LMMI read data to fabric.", bits=7),
-    PinSetting(name="LMMIRDATAVALID", dir="out", desc="LMMI read data valid to fabric.", bits=None),
-    PinSetting(name="LMMIREADY", dir="out", desc="LMMI ready signal to fabric.", bits=None),
-    PinSetting(name="CLKOP", dir="out", desc="Primary (A) output clock.", bits=None),
-    PinSetting(name="CLKOS", dir="out", desc="Secondary (B) output clock.", bits=None),
-    PinSetting(name="CLKOS2", dir="out", desc="Secondary (C) output clock.", bits=None),
-    PinSetting(name="CLKOS3", dir="out", desc="Secondary (D) output clock.", bits=None),
-    PinSetting(name="CLKOS4", dir="out", desc="Secondary (E) output clock.", bits=None),
-    PinSetting(name="CLKOS5", dir="out", desc="Secondary (F) output clock.", bits=None),
-    PinSetting(name="INTLOCK", dir="out", desc="PLL internal lock indicator. PLL CIB output.", bits=None),
-    PinSetting(name="LEGRDYN", dir="out", desc="PLL lock indicator. PLL CIB output.", bits=None),
-    PinSetting(name="LOCK", dir="out", desc="", bits=None),
-    PinSetting(name="PFDDN", dir="out", desc="PFD DN output signal to PLL CIB port.", bits=None),
-    PinSetting(name="PFDUP", dir="out", desc="PFD UP output signal to PLL CIB port.", bits=None),
-    PinSetting(name="REFMUXCK", dir="out", desc="Reference CLK mux output. PLL CIB output.", bits=None),
-    PinSetting(name="REGQA", dir="out", desc="", bits=None), PinSetting(name="REGQB", dir="out", desc="", bits=None),
-    PinSetting(name="REGQB1", dir="out", desc="", bits=None),
-    PinSetting(name="CLKOUTDL", dir="out", desc="", bits=None),
+    PinSetting(name="INTFBK0", dir="out", bits=None),
+    PinSetting(name="INTFBK1", dir="out", bits=None),
+    PinSetting(name="INTFBK2", dir="out", bits=None),
+    PinSetting(name="INTFBK3", dir="out", bits=None),
+    PinSetting(name="INTFBK4", dir="out", bits=None),
+    PinSetting(name="INTFBK5", dir="out", bits=None),
+    PinSetting(name="LMMIRDATA", dir="out", bits=7),
+    PinSetting(name="LMMIRDATAVALID", dir="out", bits=None),
+    PinSetting(name="LMMIREADY", dir="out", bits=None),
+    PinSetting(name="CLKOP", dir="out", bits=None),
+    PinSetting(name="CLKOS", dir="out", bits=None),
+    PinSetting(name="CLKOS2", dir="out", bits=None),
+    PinSetting(name="CLKOS3", dir="out", bits=None),
+    PinSetting(name="CLKOS4", dir="out", bits=None),
+    PinSetting(name="CLKOS5", dir="out", bits=None),
+    PinSetting(name="INTLOCK", dir="out", bits=None),
+    PinSetting(name="LEGRDYN", dir="out", bits=None),
+    PinSetting(name="LOCK", dir="out", bits=None),
+    PinSetting(name="PFDDN", dir="out", bits=None),
+    PinSetting(name="PFDUP", dir="out", bits=None),
+    PinSetting(name="REFMUXCK", dir="out", bits=None),
+    PinSetting(name="REGQA", dir="out", bits=None),
+    PinSetting(name="REGQB1", dir="out", bits=None),
+    PinSetting(name="CLKOUTDL", dir="out", bits=None),
 
-    #PinSetting(name="LOADREG", dir="in",desc="Valid if MC1_DYN_SOURCE = 1. Initiates a divider output phase shift on negative edge of CIB_LOAD_REG.",bits=None),
-    #PinSetting(name="DYNROTATE", dir="in", desc="Valid if MC1_DYN_SOURCE = 1. Initiates a change from current VCO clock phase to an earlier or later phase on the negative edge of CIB_ROTATE.", bits=None),
-    PinSetting(name="LMMICLK", dir="in", desc="LMMI clock from fabric.", bits=None),
-    PinSetting(name="LMMIRESETN", dir="in", desc="LMMI reset signal to reset the state machine if the IP gets locked.",
+    #PinSetting(name="LOADREG", dir="in",bits=None),
+    #PinSetting(name="DYNROTATE", dir="in", bits=None),
+    PinSetting(name="LMMICLK", dir="in", bits=None),
+    PinSetting(name="LMMIRESETN", dir="in",
                bits=None),
-    PinSetting(name="LMMIREQUEST", dir="in", desc="LMMI request signal from fabric.", bits=None),
-    PinSetting(name="LMMIWRRDN", dir="in", desc="LMMI write-high/read-low from fabric.", bits=None),
+    PinSetting(name="LMMIREQUEST", dir="in", bits=None),
+    PinSetting(name="LMMIWRRDN", dir="in", bits=None),
     PinSetting(name="LMMIOFFSET", dir="in",
-               desc="LMMI offset address from fabric. Not all bits are required for an IP.", bits=6),
-    PinSetting(name="LMMIWDATA", dir="in", desc="LMMI write data from fabric. Not all bits are required for an IP.",
+               bits=6),
+    PinSetting(name="LMMIWDATA", dir="in",
                bits=7),
 
-    PinSetting(name="REFCK", dir="in", desc="", bits=None),
-    PinSetting(name="ENCLKOP", dir="in", desc="Enable A output (CLKOP). Active high. PLL CIB input.", bits=None),
-    PinSetting(name="ENCLKOS", dir="in", desc="Enable B output (CLKOS). Active high. PLL CIB input.", bits=None),
-    PinSetting(name="ENCLKOS2", dir="in", desc="Enable C output (CLKOS2). Active high. PLL CIB input.", bits=None),
-    PinSetting(name="ENCLKOS3", dir="in", desc="Enable D output (CLKOS3). Active high. PLL CIB input.", bits=None),
-    PinSetting(name="ENCLKOS4", dir="in", desc="Enable E output (CLKOS4). Active high. PLL CIB input.", bits=None),
-    PinSetting(name="ENCLKOS5", dir="in", desc="Enable F output (CLKOS5). Active high. PLL CIB input.", bits=None),
-    PinSetting(name="FBKCK", dir="in", desc="", bits=None),
-    PinSetting(name="LEGACY", dir="in", desc="PLL legacy mode signal. Active high to enter the mode. Enabled by lmmi_legacy fuse. PLL CIB input.", bits=None),
-    PinSetting(name="PLLRESET", dir="in", desc="Active high to reset PLL. Enabled by MC1_PLLRESET. PLL CIB input.",
+    PinSetting(name="REFCK", dir="in", bits=None),
+    PinSetting(name="ENCLKOP", dir="in", bits=None),
+    PinSetting(name="ENCLKOS", dir="in", bits=None),
+    PinSetting(name="ENCLKOS2", dir="in", bits=None),
+    PinSetting(name="ENCLKOS3", dir="in", bits=None),
+    PinSetting(name="ENCLKOS4", dir="in", bits=None),
+    PinSetting(name="ENCLKOS5", dir="in", bits=None),
+    PinSetting(name="FBKCK", dir="in", bits=None),
+    PinSetting(name="LEGACY", dir="in", bits=None),
+    PinSetting(name="PLLRESET", dir="in",
                bits=None),
-    PinSetting(name="STDBY", dir="in", desc="PLL standby signal. Active high to put PLL clocks in low. Not used.",
+    PinSetting(name="STDBY", dir="in",
                bits=None),
-    PinSetting(name="ROTDEL", dir="in", desc="", bits=None),
-    PinSetting(name="DIRDEL", dir="in", desc="", bits=None),
-    PinSetting(name="ROTDELP1", dir="in", desc="", bits=None),
+    PinSetting(name="ROTDEL", dir="in", bits=None),
+    PinSetting(name="DIRDEL", dir="in", bits=None),
+    PinSetting(name="ROTDELP1", dir="in", bits=None),
 
-    PinSetting(name="BINTEST", dir="in", desc="", bits=1),
-    PinSetting(name="DIRDELP1", dir="in", desc="", bits=None),
-    PinSetting(name="GRAYACT", dir="in", desc="", bits=4),
-    PinSetting(name="BINACT", dir="in", desc="", bits=1)
+    PinSetting(name="BINTEST", dir="in", bits=1),
+    PinSetting(name="DIRDELP1", dir="in", bits=None),
+    PinSetting(name="GRAYACT", dir="in", bits=4),
+    PinSetting(name="BINACT", dir="in", bits=1)
 ]
 
 # The documentation has this but its for DIFFIO
@@ -421,17 +409,34 @@ def remove_failsafe_enum(definition):
             setting.values.remove("FAILSAFE")
     return definition
 
-seio33 = remove_failsafe_enum(PrimitiveDefinition.parse_primitive_json("SEIO33"))
-seio18 = remove_failsafe_enum(PrimitiveDefinition.parse_primitive_json("SEIO18"))
+# These work but are specially handled right now
+#seio33 = remove_failsafe_enum(PrimitiveDefinition.parse_primitive_json("SEIO33"))
+#seio18 = remove_failsafe_enum(PrimitiveDefinition.parse_primitive_json("SEIO18"))
+#PrimitiveDefinition.parse_primitive_json("DIFFIO18")
 
-PrimitiveDefinition.parse_primitive_json("DIFFIO18")
 eclkdiv = PrimitiveDefinition.parse_primitive_json("ECLKDIV")
 eclkdiv.get_setting("ECLK_DIV").enable_value = "2"
 
-PrimitiveDefinition.parse_primitive_json("PCLKDIV", core_suffix=False)
+# This definition is from 2024 web docs
+pclkdiv = PrimitiveDefinition(
+    "PCLKDIV",
+    settings=[
+        EnumSetting("DIV_PCLKDIV", [
+        "X1",
+        "X2",
+        "X4",
+        "X8",
+        "X16",
+        "X32",
+        "X64",
+        "X128"
+      ], desc="Divisor applied to clkin"),
+    ],
+)
 
 dlldel = PrimitiveDefinition.parse_primitive_json("DLLDEL", value_sizes={"ADJUST": 9})
 dlldel.get_setting("ENABLE").enable_value = "ENABLED"
+
 # Doesn't work right now -- seems optimimized out?
 # i2cfifo = PrimitiveDefinition.parse_primitive_json("I2CFIFO")
 # i2cfifo.get_setting("CR1GCEN").enable_value = "EN"

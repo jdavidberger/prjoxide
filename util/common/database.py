@@ -15,6 +15,12 @@ def get_oxide_root():
     """Return the absolute path to the Project Oxide repo root"""
     return path.abspath(path.join(__file__, "../../../"))
 
+def get_family_for_device(device):
+    family = device.split('-')[0]
+    if family == "LFD2NX":
+        return "LIFCL"
+    return family
+
 def get_radiant_version():
     # `lapie` seems to be renamed every version or so. Map that out here. Most installations will have
     # the version name at the end of their path, so we just look at the radiant dir for a hint. The user
@@ -37,6 +43,27 @@ def get_cache_dir():
     makedirs(path, exist_ok=True)
     return path
 
+
+def get_primitive_json(primitive):
+    import parse_webdoc
+
+    fn = get_cache_dir() + f"/primitives/{primitive}.json"
+
+    primitives_dir = get_cache_dir() + f"/primitives/"
+    if not path.exists(primitives_dir):
+        os.makedirs(primitives_dir, exist_ok=True)
+
+        RADIANT_DIR = os.environ.get("RADIANTDIR")
+        html_dir = f"{RADIANT_DIR}/docs/webhelp/eng/Reference Guides/FPGA Libraries Reference Guide/"
+
+        for file_path in Path(html_dir).iterdir():
+            if file_path.is_file():
+                print(file_path, primitives_dir)
+                parse_webdoc.scrape_html(str(file_path), primitives_dir)
+
+    with open(fn) as f:
+        return json.load(f)
+
 @cache
 def get_db_root():
     """
@@ -58,7 +85,7 @@ def get_db_subdir(family = None, device = None, package = None):
     """
     subdir = get_db_root()
     if family is None and device is not None:
-        family = device.split('-')[0]
+        family = get_family_for_device(device)
 
     dparts = [family, device, package]
     for dpart in dparts:
@@ -72,7 +99,7 @@ def get_db_subdir(family = None, device = None, package = None):
 def get_base_addrs(family, device = None):
     if device is None:
         device = family
-        family = device.split('-')[0]
+        family = get_family_for_device(device)
 
     tgjson = path.join(get_db_subdir(family, device), "baseaddr.json")
     if path.exists(tgjson):
@@ -91,7 +118,7 @@ def get_tilegrid(family, device = None):
     """
     if device is None:
         device = family
-        family = device.split('-')[0]
+        family = get_family_for_device(device)
 
     tgjson = path.join(get_db_subdir(family, device), "tilegrid.json")
     if path.exists(tgjson):
@@ -110,7 +137,7 @@ def get_iodb(family, device = None):
     """
     if device is None:
         device = family
-        family = device.split('-')[0]
+        family = get_family_for_device(device)
     tgjson = path.join(get_db_subdir(family, device), "iodb.json")
     with open(tgjson, "r") as f:
         return json.load(f)
@@ -125,7 +152,7 @@ def get_devices():
         return json.load(f)
 
 def get_tiletypes(family):
-    family = family.split("-")[0]    
+    family = get_family_for_device(family)
     p = path.join(get_db_root(), family, "tiletypes")
 
     tiletypes = {}
@@ -148,7 +175,7 @@ def get_sites(family, device = None):
 
     if device is None:
         device = family
-        family = device.split('-')[0]
+        family = get_family_for_device(family)
 
     return lapie.get_sites_with_pin(device)
 

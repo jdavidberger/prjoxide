@@ -2,7 +2,7 @@ use itertools::Itertools;
 use ron::ser::PrettyConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::{env, fmt};
+use std::{env, fmt, fs};
 
 use std::fs::File;
 use std::io::prelude::*;
@@ -346,12 +346,13 @@ pub struct TileBitsData {
     tiletype: String,
     pub db: TileBitsDatabase,
     dirty: bool,
+    new_pips: u32,
+    new_enums: u32,
+    new_words: u32
 }
 
 impl TileBitsData {
     pub fn sort(&mut self) {
-        debug!("Sorting {}", self.tiletype);
-
         self.db.conns.iter_mut().for_each(|(_,conn)| conn.sort());
         self.db.pips.iter_mut().for_each(|(_,pip)| pip.sort());
     }
@@ -361,6 +362,9 @@ impl TileBitsData {
             tiletype: tiletype.to_string(),
             db: db.clone(),
             dirty: false,
+            new_pips: 0,
+            new_enums: 0,
+            new_words : 0
         }
     }
 
@@ -382,6 +386,7 @@ impl TileBitsData {
     }
 
     pub fn merge(&mut self, other_db: &TileBitsDatabase) -> Result<(), String> {
+        debug!("Merging {}", self.tiletype);
         self.merge_configs(other_db)?;
 
         for (to, pip_data) in other_db.pips.iter() {
@@ -398,6 +403,7 @@ impl TileBitsData {
                 }
             }
         }
+        self.dirty = true;
 
         Ok(())
     }
@@ -427,6 +433,8 @@ impl TileBitsData {
 
                     ad.bits = bits;
                     self.dirty = true;
+                    self.new_pips += 1;
+
                     return Ok(());
                 }
 
@@ -435,6 +443,8 @@ impl TileBitsData {
             }
         }
         self.dirty = true;
+        self.new_pips += 1;
+
         debug!("Inserting new pip {from} -> {to} for {}", self.tiletype);
         ac.push(ConfigPipData {
             from_wire: from.to_string(),
@@ -454,6 +464,8 @@ impl TileBitsData {
                         bits: bits.clone(),
                     },
                 );
+
+                self.new_words += 1;
             }
             Some(word) => {
                 if !desc.is_empty() && desc != &word.desc {
@@ -518,6 +530,7 @@ impl TileBitsData {
         let ec = self.db.enums.get_mut(name).unwrap();
         if !desc.is_empty() && desc != &ec.desc {
             ec.desc = desc.to_string();
+            self.new_enums += 1;
             self.dirty = true;
         }
         match ec.options.get_mut(option) {
@@ -529,11 +542,13 @@ impl TileBitsData {
                     );
 
                     ec.options.insert(option.to_string(), bits);
+                    self.new_enums += 1;
                     self.dirty = true;
                 }
             }
             None => {
                 ec.options.insert(option.to_string(), bits);
+                self.new_enums += 1;
                 self.dirty = true;
             }
         }
@@ -595,6 +610,8 @@ impl Database {
     pub fn new(root: &str) -> Database {
         let mut devices_json_buf = String::new();
         // read the whole file
+        debug!("Opening database at {}", root);
+
         File::open(format!("{}/devices.json", root))
             .unwrap()
             .read_to_string(&mut devices_json_buf)
@@ -770,7 +787,43 @@ impl Database {
 
         &self._overlays.as_ref().unwrap()
     }
+    pub fn device_tiletypes(&mut self, family: &str) -> BTreeSet<TileTypeName> {
+        let mut tiletypes = BTreeSet::new();
+        let root = self.root.clone().unwrap();
+        let tiletypes_dir = format!("{}/{}/tiletypes/", root, family);
 
+        match fs::read_dir(&tiletypes_dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let file = entry.unwrap();
+                    if file.path().extension().unwrap_or_default() == "ron" {
+                        tiletypes.insert(file.path().file_stem().unwrap().to_str().unwrap().to_string());
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Failed to read tile types for {family} {tiletypes_dir}: {e}");
+            }
+        }
+
+        match fs::read_dir(format!("{}/{}/overlays/", root, family)) {
+            Ok(entries) => {
+                for entry in entries {
+                    let file = entry.unwrap();
+                    if file.path().extension().unwrap_or_default() == "ron" {
+                        let overlay = file.path().file_stem().unwrap().to_str().unwrap().to_string();
+                        tiletypes.insert(format!("overlays/{}", overlay));
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Failed to read overlay tile types for {family}: {e}");
+            }
+        }
+
+        debug!("Reading {} tile types {:?}", family, tiletypes);
+        tiletypes
+    }
     // Tilegrid for a device by family and name
     pub fn device_tilegrid(&mut self, family: &str, device: &str) -> &DeviceTilegrid {
         let key = (family.to_string(), device.to_string());
@@ -844,6 +897,31 @@ impl Database {
         }
         self.cell_tmg.get(&key).unwrap()
     }
+    pub fn merge(&mut self, other: &mut Database) -> Result<(), String>{
+        let families : BTreeSet<String> = self.devices.families.iter().map(|(k,_v)| k.to_string()).collect();
+
+        for family in families {
+            let family_str = family.as_str();
+
+            for tiletype in other.device_tiletypes(family_str) {
+                let other_tiledb = other.tile_bitdb(family_str, tiletype.as_str());
+                self.tile_bitdb(family_str, &tiletype).merge(&other_tiledb.db)?;
+            }
+
+            // let ip_tiledb = other.ip_bitdb(family_str, tiletype.as_str());
+            // self.ip_bitdb(family_str, &tiletype).merge(&ip_tiledb.db)?;
+
+
+        }
+
+        for (device, name_to_type_map) in other.overlay_tiletypes.iter() {
+            let new_map = self.overlay_tiletypes.entry(device.clone()).or_insert(BTreeMap::new());
+            for (tilename, tiletypename) in name_to_type_map.iter() {
+                new_map.insert(tilename.clone(), tiletypename.clone());
+            }
+        }
+        Ok(())
+    }
     pub fn tile_bitdb_from_overlays(&mut self, family: &str, tiletype: &str, overlay: &OverlayTiletype) -> Result<TileBitsData, String> {
         let tile_bits_db = TileBitsDatabase {
             pips: BTreeMap::new(),
@@ -884,9 +962,9 @@ impl Database {
                     self.tile_bitdb_from_overlays(family, tiletype, &overlay).unwrap()
                 }
                 None => {
-                    let is_overlay = tiletype.starts_with("overlay/");
+                    let is_overlay = tiletype.starts_with("overlays/");
                     let filename = if is_overlay {
-                        format!("{}/overlays/{}.ron", family, tiletype.replace("overlay/", ""))
+                        format!("{}/overlays/{}.ron", family, tiletype.replace("overlays/", ""))
                     } else {
                         format!("{}/tiletypes/{}.ron", family, tiletype)
                     };
@@ -952,6 +1030,10 @@ impl Database {
     }
     // Flush tile bit database changes to disk
     pub fn flush(&mut self) {
+        let mut new_pips : u32 = 0;
+        let mut new_enums : u32 = 0;
+        let mut new_words : u32 = 0;
+
         for kv in self.tilebits.iter_mut() {
             let (family, tiletype) = kv.0;
             let tilebits = kv.1;
@@ -967,18 +1049,23 @@ impl Database {
             };
 
             tilebits.sort();
-            let is_overlay = tiletype.starts_with("overlay");
+            let is_overlay = tiletype.starts_with("overlays/");
 
             let (dir_name, file_name) = if is_overlay {
-                ("overlays", tiletype.replace("overlay", ""))
+                ("overlays", tiletype.replace("overlays", ""))
             } else {
                 ("tiletypes", tiletype.clone())
             };
 
             debug!("Writing {}/{}/{}/{}.ron",
                 self.root.as_ref().unwrap(), family, dir_name, file_name);
+            new_pips += tilebits.new_pips;
+            new_enums += tilebits.new_enums;
+            new_words += tilebits.new_words;
 
             let tt_ron_buf = ron::ser::to_string_pretty(&tilebits.db, pretty).unwrap();
+
+            fs::create_dir_all(format!("{}/{}/{}", self.root.as_ref().unwrap(), family, dir_name)).unwrap();
             File::create(format!(
                 "{}/{}/{}/{}.ron",
                 self.root.as_ref().unwrap(), family, dir_name, file_name
@@ -1013,6 +1100,10 @@ impl Database {
                 .write_all(tt_ron_buf.as_bytes())
                 .unwrap();
             ipbits.dirty = false;
+        }
+
+        if new_pips > 0 || new_enums > 0 || new_words > 0 {
+            info!("Flushing with {} new pips, {} new enum settings, {} new words", new_pips, new_enums, new_words);
         }
     }
 }

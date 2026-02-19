@@ -135,7 +135,7 @@ class FuzzConfig:
         self.job = job
         self.tiles = tiles
         if sv is None:
-            family = device.split("-")[0]
+            family = database.get_family_for_device(device)
             suffix = device.split("-")[1]
             sv = database.get_oxide_root() + f"/fuzzers/{family}/shared/empty.v"
         self.sv = sv
@@ -216,7 +216,7 @@ class FuzzConfig:
         }
 
         return {
-            "arch": self.device.split("-")[0],
+            "arch": database.get_family_for_device(self.device),
             "arcs_attr": "",
             "device": self.device,
             "package": packages.get(self.device, "QFN72"),

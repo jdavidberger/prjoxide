@@ -5,10 +5,8 @@ import re
 from bs4 import BeautifulSoup
 from pathlib import Path
 
-
 def normalize_text(s: str) -> str:
     return " ".join(s.encode('ascii', errors='ignore').decode("ascii").replace("(default)", "").split())
-
 
 def extract_cell_value(td):
     text = normalize_text(td.get_text())
@@ -53,16 +51,21 @@ def parse_table(table):
                 cell_value = [cell_value]
             row_obj[header] = cell_value
 
+
+
         if row_obj.get("Name", None) == "":
-            data[-1]["Values"].extend(row_obj["Values"])
-            #data[-1]["Description"] += (row_obj["Description"])
+            if "Values" not in data[-1]:
+                data[-1]["Values"] = []
+
+            data[-1]["Values"].extend(row_obj.get("Values", []))
+            #data[-1]["Description"] += (row_obj.get("Description", ""))
         else:
             data.append(row_obj)
 
     return data
 
 
-def scrape_html(html_path: Path):
+def scrape_html(html_path: Path, out_dir = "./primitives"):
     with open(html_path, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f, "lxml")
 
@@ -71,7 +74,6 @@ def scrape_html(html_path: Path):
 
     output["description"] = "".join([div.get_text() for div in soup.select(".BodyAfterHead")])
     output["platforms"] = [ supported_platforms.get_text() for supported_platforms in soup.select(".Bulleted")]
-
 
     for title_div in soup.select("div.TableTitle"):
         table_title = normalize_text(title_div.get_text())
@@ -84,7 +86,8 @@ def scrape_html(html_path: Path):
 
         output[table_title] = parse_table(table)
 
-    output_path = f"primitives/{title}.json"
+    output_path = Path(out_dir) / Path(f"{title.replace('/', '_')}.json")
+    print(output_path, out_dir, title)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2)
 

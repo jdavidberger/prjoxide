@@ -36,7 +36,7 @@ def type_from_fullname(tile):
 
 def get_rc_from_edge(device, side, offset):
     devices = database.get_devices()
-    device_info = devices["families"][device.split("-")[0]]["devices"][device]
+    device_info = devices["families"][database.get_family_for_device(device)]["devices"][device]
 
     max_row = device_info["max_row"]
     max_col = device_info["max_col"]
@@ -363,7 +363,7 @@ def get_connected_tiles(device, tilename):
 
 def draw_rc(device, rcs):
     devices = database.get_devices()
-    device_info = devices["families"][device.split("-")[0]]["devices"][device]
+    device_info = devices["families"][database.get_family_for_device(device)]["devices"][device]
 
     max_row = device_info["max_row"]
     max_col = device_info["max_col"]
@@ -733,7 +733,7 @@ def resolve_possible_names(device, n, rel_to=(0,0)):
 def is_edge_node(device, n):
     rcs = resolve_node_rcs(device, n)
     devices = database.get_devices()
-    device_info = devices["families"][device.split("-")[0]]["devices"][device]
+    device_info = devices["families"][database.get_family_for_device(device)]["devices"][device]
 
     max_row = device_info["max_row"]
     max_col = device_info["max_col"]

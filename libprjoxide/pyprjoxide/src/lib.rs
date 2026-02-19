@@ -89,6 +89,12 @@ impl Database {
     pub fn reformat(&mut self) {
         self.db.reformat();
     }
+    pub fn merge(&mut self, other: &mut Database) -> PyResult<()>{
+        match self.db.merge(&mut other.db) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(PyException::new_err(e))
+        }
+    }
 }
 
 #[pyclass]
@@ -225,7 +231,7 @@ impl Fuzzer {
     fn add_enum_sample(&mut self, db: &mut Database, option: &str, base_bitfile: &str) {
         self.fz.add_enum_sample(&mut db.db, option, base_bitfile);
     }
-    fn add_enum_delta(&mut self, db: &mut Database, option: &str, delta: ChipDelta) {
+    fn add_enum_delta(&mut self, option: &str, delta: ChipDelta) {
         self.fz.add_enum_delta(option, delta);
     }
 
