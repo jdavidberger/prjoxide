@@ -8,6 +8,14 @@ fuzz=false
 merge=false
 git_commit=false
 
+print_usage() {
+  echo "Usage: ./generate_database.sh <flags>"
+  echo "Flags:"
+  echo " -f - Run each fuzzer and store the results to their local fuzzer db"
+  echo " -m - Merge the local fuzzer db into the global db"
+  echo " -g - Run git commit as the local fuzzers are merged."
+}
+
 while getopts 'fgm' flag; do
   case "${flag}" in
     f) fuzz=true ;;

@@ -21,6 +21,22 @@ from collections import defaultdict
 
 from DesignFileBuilder import UnexpectedDeltaException, DesignFileBuilder, BitConflictException
 
+### This fuzzer maps all of the pips in each device. It does this by anonymizing the pips for every tile, and generating
+### common groupings which share pip definitions. A grouping of common pips is writen to an overlay file and we track
+### which tiles containe which overlays.
+###
+### Currently the overlays are also keyed by tile type and in certain cases by device.
+###
+### To get the pips for every tile, the first thing this fuzzer does is download the node database from lark/lapie tools.
+### This is pretty slow -- expect 2-3 hours per device -- but the results are cached into a sqlite database so this is
+### a one time thing.
+###
+### To minimize the number of bitstreams built, this fuzzer uses DesignFileBuilder. This construct can combine multiple
+### PIPs to solve into a single design. This brings the total number of bitfiles needed from around 20k per device to
+### 2-3k per device.
+
+
+### The hash in python isn't stable, so we generate our own to name the overlays unqiuely.
 def stablehash(x):
     def set_default(obj):
         if isinstance(obj, set):
@@ -40,6 +56,9 @@ def make_dict_of_lists(lst, key):
         rtn[key(item)].append(item)
     return rtn
 
+def make_overlay_name(k):
+    (anon_pips, *args) = k
+    return "-".join([*args, stablehash(anon_pips)])
 
 async def FuzzAsync(executor):
     families = database.get_devices()["families"]
@@ -51,10 +70,6 @@ async def FuzzAsync(executor):
     ]
 
     for device in devices:
-        logging.info(device)
-
-        tiletype = "PLC"
-
         tilegrid = database.get_tilegrid(device)['tiles']
 
         all_tiles = sorted({k for k in tilegrid})
@@ -72,27 +87,14 @@ async def FuzzAsync(executor):
 
         for pip,ts in pips_to_tiles.items():
             for tile_type, tt_ts in make_dict_of_lists(ts, lambda x: x.split(":")[-1]).items():
-
                 rel_pip_groups_by_tiletype[tuple(sorted(tt_ts))].add(pip)
 
 
         sorted_groups = sorted(rel_pip_groups.items(), key=lambda x: len(x[0]), reverse=True)
 
-        json_groups = [
-            (k, sorted([[", ".join(map(str, w)) for w in p] for p in v]))
-            for k, v in sorted_groups
-        ]
-        def set_default(obj):
-            if isinstance(obj, set):
-                return sorted(obj)
-            raise TypeError
-
         def pip_is_tiletype_dependent(p):
+            # Currently we seperate everything out by tiletype; but this might be unnecessary in some cases.
             return True
-            return any([(w[0].split(":")[0] in ["C"] or w[0].startswith("G:VCC"))
-                        for w in p])
-
-        dll_core_wire = re.compile(r"^J(CODEI(\d+)_I_DQS_TOP_DLL_CODE_ROUTING_MUX|D[01]_I4_\d)$")
 
         overlays = {}
         for ts, anon_pips in rel_pip_groups_by_tiletype.items():
@@ -106,17 +108,14 @@ async def FuzzAsync(executor):
                         grp = sorted(grp)
 
                         overlay_args = [tt]
+
+                        # TAP_CIB has conflicts amongst devices; so add device to the overlay key
                         if tt == "TAP_CIB":
                             overlay_args.append(device)
 
                         overlays[(tuple(sorted(split_anon_pips)), *overlay_args)] = grp
                 else:
                     overlays[(tuple(sorted(split_anon_pips)), )] = sorted(ts)
-
-
-        def make_overlay_name(k):
-            (anon_pips, *args) = k
-            return "-".join([*args, stablehash(anon_pips)])
 
         tiles_to_overlays = {}
         for k,lst in overlays.items():
@@ -132,7 +131,6 @@ async def FuzzAsync(executor):
         db_sub_dir = database.get_db_subdir(device = device)
         with open(f"{db_sub_dir}/overlays.json", "w") as f:
             overlay_doc = {
-                #"overlay_membership": {make_overlay_name(k):sorted(v) for k,v in overlays.items()},
                 "overlays": {
                     stablehash(k): sorted(k) for k in overlays_to_tiles
                 },

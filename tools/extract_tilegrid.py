@@ -63,7 +63,7 @@ tap_frame_to_col_17 = {
 def get_tf2c(dev):
     if dev == "LFCPNX-100":
         return tap_frame_to_col_100
-    elif dev == "LIFCL-40" or dev == "LFDN2X-40" or dev == "LFD2NX-40":
+    elif dev == "LIFCL-40" or dev == "LFDN2X-40":
         return tap_frame_to_col_40
     elif dev == "LIFCL-17":
         return tap_frame_to_col_17
