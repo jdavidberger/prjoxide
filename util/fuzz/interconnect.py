@@ -501,7 +501,7 @@ async def fuzz_interconnect_sinks_across_span(
 
     chip = fuzzconfig.FuzzConfig.standard_chip(device)
 
-    tile_suffix = "" if overlay is None else ",overlay/" + overlay
+    tile_suffix = "" if overlay is None else ",overlays/" + overlay
 
     if len(modified_tiles_rcs_anon) == 0:
         if len(pips) > 0:

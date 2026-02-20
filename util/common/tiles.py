@@ -172,14 +172,16 @@ def get_node_list_lookups(device):
 
         tiles_at_rc = get_owning_tiles_for_rc(rc)
 
-        if len(tiles_at_rc) == 0:
-            logging.warning(f"Could not find tiles for {device} {rc} {name} {[t for t in get_tiles_by_rc(device, rc)]}")
+        tileless_rcs = set(["R37C52_H01E0100", "R73C160_JIVREFI4_IVREF_CORE"])
 
-        if name == "R37C52_H01E0100" and len(tiles_at_rc) == 0:
+        if name in tileless_rcs and len(tiles_at_rc) == 0:
             # LIFCL-33 weirdness
             continue
 
-        assert len(tiles_at_rc) > 0
+
+        if len(tiles_at_rc) == 0:
+            logging.warning(f"Could not find tiles for {device} {rc} {name} {[t for t in get_tiles_by_rc(device, rc)]}")
+            continue
 
         if rc is None:
             continue
@@ -281,13 +283,13 @@ def get_rc_from_name(device, name):
         return name
 
     if name[:6] in _get_rc_from_name_lookup:
-        return _get_rc_from_name_lookup[name[:6]]
+        return _get_rc_from_name_lookup[name[:7]]
 
     m = rc_regex.search(name)
     if m:
         rc = (int(m.group(1)), int(m.group(2)))
         if m.start() == 0:
-            _get_rc_from_name_lookup[name[:6]] = rc
+            _get_rc_from_name_lookup[name[:7]] = rc
         return rc
 
     m = edge_regex.match(name)
@@ -808,7 +810,7 @@ class TilesHelper:
     def get_related_tiles(self, anon_tile, rel_to):
         tiletype = anon_tile[0]
 
-        unique_prefixes = ["PCLK_DLY", "DDR_OSC", "IO_", "SYSIO_", "TMID_", "BMID_", "GPLL_"]
+        unique_prefixes = ["PCLK_DLY", "DDR_OSC", "IO_", "SYSIO_", "TMID_", "BMID_", "GPLL_", "DLY"]
         for unique_prefix in unique_prefixes:
             if tiletype.startswith(unique_prefix):
 

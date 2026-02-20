@@ -279,7 +279,7 @@ pub fn normalize_wire(chip: &Chip, tile: &Tile, wire: &str) -> String {
 
     if tile.name.contains("TAP") && (wn.starts_with("HPRX") || wn.starts_with("HPBX")) && !wn.starts_with("HFIE") {
         let branch_dir = match chip.device.as_str() {
-            "LIFCL-40" | "LIFCL-17" | "LFD2NX-40" =>
+            "LIFCL-40" | "LIFCL-17" | "LFD2NX-40" | "LFCPNX-100" =>
                 if wx < tx {
                     Some("L")
                 } else if wx > tx {

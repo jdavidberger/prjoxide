@@ -122,7 +122,7 @@ async def FuzzAsync(executor):
             for item in lst:
                 if item not in tiles_to_overlays:
                     tiles_to_overlays[item] = {item.split(":")[-1]}
-                tiles_to_overlays[item].add("overlay/" + make_overlay_name(k))
+                tiles_to_overlays[item].add("overlays/" + make_overlay_name(k))
 
         overlays_to_tiles = defaultdict(set)
         for tile,tile_overlays in tiles_to_overlays.items():
@@ -139,6 +139,11 @@ async def FuzzAsync(executor):
                 }
             }
 
+            def set_default(obj):
+                if isinstance(obj, set):
+                    return sorted(obj)
+                raise TypeError
+
             json.dump(overlay_doc, f, default=set_default, indent=4, sort_keys=True)
 
         builder = DesignFileBuilder(device, executor)
@@ -147,7 +152,7 @@ async def FuzzAsync(executor):
             (anon_pips, *args) = overlay_key
             overlay = make_overlay_name(overlay_key)
 
-            config = FuzzConfig(job=f"{tiletype}-routes", device=device, tiles=ts)
+            config = FuzzConfig(job=f"pip-overlays", device=device, tiles=ts)
             return await interconnect.fuzz_interconnect_sinks_across_span(config, ts, anon_pips, executor=executor, overlay=overlay, check_pip_placement=False, builder=builder)
 
         logging.info(f"Overlay count: {len(overlays)}")

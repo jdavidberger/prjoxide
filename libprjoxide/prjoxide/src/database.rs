@@ -936,7 +936,7 @@ impl Database {
 
         let overlay_members : Vec<String> = overlay.overlays.clone().into_iter()
             .sorted_by(|x, y| {
-                (y.starts_with("overlay"), y).cmp(&(x.starts_with("overlay"), x))
+                (y.starts_with("overlays"), y).cmp(&(x.starts_with("overlays"), x))
             }).collect();
 
         for layer in overlay_members {
@@ -1065,14 +1065,15 @@ impl Database {
 
             let tt_ron_buf = ron::ser::to_string_pretty(&tilebits.db, pretty).unwrap();
 
-            fs::create_dir_all(format!("{}/{}/{}", self.root.as_ref().unwrap(), family, dir_name)).unwrap();
-            File::create(format!(
+            fs::create_dir_all(format!("{}/{}/{}", self.root.as_ref().unwrap(), family, dir_name)).expect("Could not create directory for tiletype");
+            let ron_file = format!(
                 "{}/{}/{}/{}.ron",
                 self.root.as_ref().unwrap(), family, dir_name, file_name
-            ))
-            .unwrap()
+            );
+            File::create(&ron_file)
+            .expect(format!("Could not create ron file {}", ron_file).as_str())
             .write_all(tt_ron_buf.as_bytes())
-            .unwrap();
+            .expect("Could not write ron file");
             tilebits.dirty = false;
         }
         for kv in self.ipbits.iter_mut() {
