@@ -3,10 +3,12 @@ This module provides a structure to define the fuzz environment
 """
 import gzip
 import hashlib
+import json
 import logging
 import os
 import pickle
 import threading
+from collections import defaultdict
 from concurrent.futures import Future
 from functools import cache
 from multiprocessing.synchronize import RLock
@@ -211,12 +213,13 @@ class FuzzConfig:
         packages = {
             "LIFCL-33": "WLCSP84",
             "LIFCL-33U": "WLCSP84",
+            "LFD2NX-40": "CABGA256",
             "LFCPNX-40": "LFG672",
             "LFCPNX-100": "LFG672"
         }
 
         return {
-            "arch": database.get_family_for_device(self.device),
+            "arch": self.device.split("-")[0],
             "arcs_attr": "",
             "device": self.device,
             "package": packages.get(self.device, "QFN72"),
@@ -335,3 +338,46 @@ class FuzzConfig:
             self.setup()
         assert self.udb_specimen is not None
         return self.udb_specimen
+
+def json_converter(obj):
+    if isinstance(obj, set):
+        return sorted(obj)
+    raise TypeError
+
+def stablehash(x):
+    bytes_data = json.dumps(x, sort_keys=True, default=json_converter).encode('utf-8')
+
+    hasher = hashlib.new("sha1")
+    hasher.update(bytes_data)
+
+    return hasher.hexdigest()
+
+def make_overlay_name(k):
+    (anon_pips, *args) = k
+    return "-".join([*args, stablehash(anon_pips)])
+
+def register_device_overlays(device, overlay_provider, overlays):
+    tiles_to_overlays = {}
+    for k, lst in overlays.items():
+        for item in lst:
+            if item not in tiles_to_overlays:
+                tiles_to_overlays[item] = {item.split(":")[-1]}
+            tiles_to_overlays[item].add("overlays/" + make_overlay_name(k))
+
+    overlays_to_tiles = defaultdict(set)
+    for tile, tile_overlays in tiles_to_overlays.items():
+        overlays_to_tiles[tuple(sorted(tile_overlays))].add(tile)
+
+    db_sub_dir = database.get_db_subdir(device=device)
+    os.makedirs(f"{db_sub_dir}/overlays.d", exist_ok = True)
+    with open(f"{db_sub_dir}/overlays.d/{overlay_provider}.json", "w") as f:
+        overlay_doc = {
+            "overlays": {
+                stablehash(k): sorted(k) for k in overlays_to_tiles
+            },
+            "tiletypes": {
+                stablehash(k): sorted(v) for k, v in overlays_to_tiles.items()
+            }
+        }
+
+        json.dump(overlay_doc, f, default=json_converter, indent=4, sort_keys=True)

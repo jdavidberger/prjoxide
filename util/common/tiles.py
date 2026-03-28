@@ -172,15 +172,16 @@ def get_node_list_lookups(device):
 
         tiles_at_rc = get_owning_tiles_for_rc(rc)
 
-        tileless_rcs = set(["R37C52_H01E0100", "R73C160_JIVREFI4_IVREF_CORE"])
-
-        if name in tileless_rcs and len(tiles_at_rc) == 0:
-            # LIFCL-33 weirdness
-            continue
-
-
         if len(tiles_at_rc) == 0:
-            logging.warning(f"Could not find tiles for {device} {rc} {name} {[t for t in get_tiles_by_rc(device, rc)]}")
+            tileless_rcs = set()
+
+            # LIFCL-33 weirdness. Basically tiles at this RC don't actually exist, but there are nodes with the RC names.
+            # We don't want to emit warnings about these. If other device/RC's are similar they should be added here.
+            if device == "LIFCL-33U":
+                tileless_rcs = set(["R37C52_H01E0100", "R73C160_JIVREFI4_IVREF_CORE"])
+
+            if name not in tileless_rcs:
+                logging.warning(f"Could not find tiles for {device} {rc} {name} {[t for t in get_tiles_by_rc(device, rc)]}")
             continue
 
         if rc is None:

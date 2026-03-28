@@ -481,7 +481,7 @@ impl Fuzzer {
                                     let tiletype_or_overlay = if overlay.is_empty() {
                                         tiletype.clone()
                                     } else {
-                                        format!("overlay/{}-{}", tiletype, overlay)
+                                        format!("overlays/{}-{}", tiletype, overlay)
                                     };
                                     
                                     info!("Resolved {} {} {:?} {}", name, option, b, tiletype_or_overlay);

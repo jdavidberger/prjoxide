@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
 import logging
+from collections import defaultdict
 
+import fuzzconfig
 from fuzzconfig import FuzzConfig, should_fuzz_platform
 import nonrouting
 import fuzzloops
@@ -27,43 +29,30 @@ def create_config_from_pad(pad, device):
     (r,c) = tiles.get_rc_from_name(device,ts[0])
 
     # Make sure we get every combination of SYSIO tile types that are next to eachother
-    neighbor_tile_types = sorted(list({
+    neighbor_tile_types = sorted({
         tile.split(":")[1]
         for x in [-1,0,1]
         for y in [-1,0,1]
         for tile in tiles.get_tiles_by_rc(device, ((r+x), (c+y)) ) if "SYSIO" in tile
-    }))
+    })
     pio = pio_names[pad["pio"]]
     return (
-        "|".join(neighbor_tile_types) + "-" + pio,
-        (pio_names[pad["pio"]],
-         pin,
-         FuzzConfig(job=f"{pin}/{ts[0]}/{tiletype}", device=device,
-                    tiles=ts + all_sysio))
+        (tuple(neighbor_tile_types), 'HSIO', tiletype, pio),
+        (pio_names[pad["pio"]], pin, [ts[0], *all_sysio])
     )
 
 def create_configs_for_device(device):
     pads = [x for x in database.get_iodb(device)["pads"]]
-    configs = dict(filter(None, [
-        create_config_from_pad(x, device) for x in pads if x["offset"] >= 0
-    ]))
-    return configs
 
-configs = (create_configs_for_device("LIFCL-33") | create_configs_for_device("LIFCL-40") ).items()
-# + [
-#     ("A","V1", # PB6A
-#         FuzzConfig(job="IO5A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R56C6:SYSIO_B5_0", "CIB_R56C7:SYSIO_B5_1"])),
-#     ("B","W1", # PB6B
-#         FuzzConfig(job="IO5B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R56C6:SYSIO_B5_0", "CIB_R56C7:SYSIO_B5_1"])),
-#     ("A","Y7", # PB30A
-#         FuzzConfig(job="IO4A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R56C30:SYSIO_B4_0", "CIB_R56C31:SYSIO_B4_1"])),
-#     ("B","Y8", # PB30B
-#         FuzzConfig(job="IO4B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R56C30:SYSIO_B4_0", "CIB_R56C31:SYSIO_B4_1"])),
-#     ("A","R12", # PB64A
-#         FuzzConfig(job="IO3A", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R56C64:SYSIO_B3_0", "CIB_R56C65:SYSIO_B3_1"])),
-#     ("B","P12", # PB64A
-#         FuzzConfig(job="IO3B", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R56C64:SYSIO_B3_0", "CIB_R56C65:SYSIO_B3_1"])),
-# ]
+    config_items = filter(None, [
+        create_config_from_pad(x, device) for x in pads if x["offset"] >= 0
+    ])
+
+    configs = defaultdict(list)
+    for (key, value) in config_items:
+        configs[key].append(value)
+
+    return configs
 
 seio_types = [
     ("LVCMOS18H", 1.8, None),
@@ -99,15 +88,32 @@ diffio_types = [
 device_empty_bitfile = {}
 
 async def main(executor):
-    async def per_config(config):
-        overlay, (pio, site, cfg) = config
+    overlays = defaultdict(lambda: defaultdict(list))
+    overlay_ran = set()
+    async def per_config(device, overlay, config):
+        (context, _, _, pio) = overlay
 
-        overlay_suffix = hashlib.sha1(overlay.encode()).hexdigest()
+        pin, site, ts = config[0]
+        nonlocal overlays
+
+        overlays[device][overlay].append(ts[0])
+
+        overlay_suffix = fuzzconfig.make_overlay_name(overlay)
+        if overlay in overlay_ran:
+            logging.info(f"Not building {overlay}[{overlay_suffix}] for {device}")
+            return
+
+        logging.info(f"Building {overlay}[{overlay_suffix}] for {device}")
+        overlay_ran.add(overlay)
+        
+        tiletype = ts[0].split(":")[1]
+        cfg = FuzzConfig(job=f"{pin}/{ts[0]}/{tiletype}/{overlay_suffix}", device=device, tiles=ts)
+
         (r,c) = tiles.get_rc_from_name(cfg.device, cfg.tiles[0])
 
         if f"R{r}C{c}_JPADDO_SEIO18_CORE_IO{pio}" not in tiles.get_full_node_set(cfg.device) and \
            f"R{r}C{c}_JPADDO_DIFFIO18_CORE_IO{pio}" not in tiles.get_full_node_set(cfg.device):
-            print(f"Skipping {site}; it's an SEIO33 site")
+            logging.info(f"Skipping {site}; it's an SEIO33 site")
             return
         
         cfg.setup()
@@ -172,6 +178,7 @@ async def main(executor):
 
         futures = []
         def fuzz_enum_setting(*args, **kwargs):
+            logging.info(f"Fuzz enum setting {args[0]} {overlay_suffix}")
             futures.append(fuzzloops.wrap_future(nonrouting.fuzz_enum_setting(cfg, empty, executor=executor, overlay=overlay_suffix, *args, **kwargs)))
 
         fuzz_enum_setting("PIO{}.SEIO18.DRIVE_1V0".format(pio), ["2", "4"],
@@ -245,22 +252,22 @@ async def main(executor):
             fuzz_enum_setting("PIO{}.DIFFIO18.DIFFTX_INV".format(pio), ["NORMAL", "INVERT"],
                             lambda x: get_substs(iotype="OUTPUT_LVDS", kv=("DIFFTX_INV", x)), False)
 
+        logging.info(f"Site {overlay} created {len(futures)} futures")
         await asyncio.gather(*futures)
 
-    def cfg_filter(config):
-        _, (pio, site, cfg) = config
-        if not should_fuzz_platform(cfg.device):
-            return False
+    families = database.get_devices()["families"]
+    devices = [
+        device
+        for device in families["LIFCL"]["devices"]
+        if fuzzconfig.should_fuzz_platform(device)
+    ]
 
-        if len(sys.argv) > 1 and sys.argv[1] not in cfg.tiles[0]:
-            return False
+    await asyncio.gather(*[per_config(device, overlay,config)
+                           for device in devices
+                           for overlay,config in create_configs_for_device(device).items()])
 
-        if len(sys.argv) > 2 and sys.argv[2] != pio:
-            return False
-        
-        return True
-
-    await asyncio.gather(*[per_config(config) for config in filter(cfg_filter, configs)])
+    for device, overlay_tiles in overlays.items():
+        fuzzconfig.register_device_overlays(device, "032-hsio_mode", overlay_tiles)
 
 if __name__ == "__main__":
     fuzzloops.FuzzerAsyncMain(main)

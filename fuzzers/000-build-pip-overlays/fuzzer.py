@@ -2,6 +2,7 @@ import hashlib
 import itertools
 import json
 import logging
+import os
 import pprint
 import traceback
 from functools import cache
@@ -89,9 +90,6 @@ async def FuzzAsync(executor):
             for tile_type, tt_ts in make_dict_of_lists(ts, lambda x: x.split(":")[-1]).items():
                 rel_pip_groups_by_tiletype[tuple(sorted(tt_ts))].add(pip)
 
-
-        sorted_groups = sorted(rel_pip_groups.items(), key=lambda x: len(x[0]), reverse=True)
-
         def pip_is_tiletype_dependent(p):
             # Currently we seperate everything out by tiletype; but this might be unnecessary in some cases.
             return True
@@ -117,34 +115,7 @@ async def FuzzAsync(executor):
                 else:
                     overlays[(tuple(sorted(split_anon_pips)), )] = sorted(ts)
 
-        tiles_to_overlays = {}
-        for k,lst in overlays.items():
-            for item in lst:
-                if item not in tiles_to_overlays:
-                    tiles_to_overlays[item] = {item.split(":")[-1]}
-                tiles_to_overlays[item].add("overlays/" + make_overlay_name(k))
-
-        overlays_to_tiles = defaultdict(set)
-        for tile,tile_overlays in tiles_to_overlays.items():
-            overlays_to_tiles[tuple(sorted(tile_overlays))].add(tile)
-
-        db_sub_dir = database.get_db_subdir(device = device)
-        with open(f"{db_sub_dir}/overlays.json", "w") as f:
-            overlay_doc = {
-                "overlays": {
-                    stablehash(k): sorted(k) for k in overlays_to_tiles
-                },
-                "tiletypes": {
-                    stablehash(k): sorted(v) for k,v in overlays_to_tiles.items()
-                }
-            }
-
-            def set_default(obj):
-                if isinstance(obj, set):
-                    return sorted(obj)
-                raise TypeError
-
-            json.dump(overlay_doc, f, default=set_default, indent=4, sort_keys=True)
+        fuzzconfig.register_device_overlays(device, "000-build-pip-overlays", overlays)
 
         builder = DesignFileBuilder(device, executor)
 
