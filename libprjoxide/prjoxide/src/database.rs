@@ -306,7 +306,7 @@ pub struct TileBitsDatabase {
     pub always_on: BTreeSet<ConfigBit>,
     #[serde(default)]
 
-    // Tiletype and relative offset for the tiles that this tiletype configures -- that is, changes in
+    // Relative offset for the tiles that this tiletype configures -- that is, changes in
     // this tiles bits reflect a change in either pips or primitives in the other tile.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub tile_configures_external_tiles : BTreeSet<(i32, i32)>,
