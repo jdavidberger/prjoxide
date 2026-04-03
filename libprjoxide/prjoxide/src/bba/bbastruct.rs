@@ -132,12 +132,14 @@ impl<'a> BBAStructs<'a> {
         rel_x: i16,
         rel_y: i16,
         wire_idx: usize,
+        wire_name: IdString
     ) -> Result<()> {
         self.out.i16_val(rel_x)?; // neighbour loc X
         self.out.i16_val(rel_y)?; // neighbour loc Y
         self.out.u16_val(wire_idx.try_into().unwrap())?; // index of wire in neighbour tile
         self.out.u8_val(loc_type)?; // for special cases like globals
         self.out.u8_val(arc_flags)?; // direction info
+        self.out.u32_val(wire_name.val().try_into().unwrap())?; // For verifying the wireidx is correct
         Ok(())
     }
 

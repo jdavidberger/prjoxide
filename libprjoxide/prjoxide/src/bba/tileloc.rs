@@ -909,6 +909,7 @@ impl LocationTypes {
                             arc_rel_x.try_into().unwrap(),
                             arc_rel_y.try_into().unwrap(),
                             other_loc_idx,
+                            arc.other_loc_wire
                         )?;
                         *neigh_wire_count.get_mut(k).unwrap() += 1;
                     }
