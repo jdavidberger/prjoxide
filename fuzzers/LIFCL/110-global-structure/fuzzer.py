@@ -13,7 +13,7 @@ import fuzzloops
 
 configs = [
     ("LIFCL-33", "../shared/empty_33.v"),
-    ("LIFCL-33U", "../shared/empty_33u.v"),            
+    ("LIFCL-33U", "../shared/empty.v"),            
     ("LIFCL-40", "../shared/empty_40.v"),
     ("LIFCL-17", "../shared/empty_17.v"),
 ]
@@ -114,6 +114,7 @@ def main():
             spine_to_branch_row[vpsx_r].append(r)
         spines = []
         sp_test_row = None
+        print("spine_to_branch_row", spine_to_branch_row)
         for sr, brs in sorted(spine_to_branch_row.items()):
             if sp_test_row is None:
                 sp_test_row = sr
@@ -121,7 +122,7 @@ def main():
         gdb["spines"] = spines
         save_db()
         # HROWs
-        hrow_to_spine_col = {}
+        hrow_to_spine_rcs = {}
         spine_wires = ["R{}C{}_VPSX0000".format(sp_test_row, c) for c in sorted(set(branch_driver_col.values()))]
         hr_info = lapie.get_node_data(cfg.device, spine_wires)
         for n in hr_info:
@@ -132,15 +133,17 @@ def main():
                     hrow_r, hrow_c = pos_from_name(uh.from_wire)
                     break
             assert hrow_c is not None
-            if hrow_c not in hrow_to_spine_col:
-                hrow_to_spine_col[hrow_c] = []
-            hrow_to_spine_col[hrow_c].append(c)
+            if hrow_c not in hrow_to_spine_rcs:
+                hrow_to_spine_rcs[(hrow_r, hrow_c)] = []
+            hrow_to_spine_rcs[(hrow_r, hrow_c)].append((r,c))
         hrows = []
         sp_test_row = None
-        for hrc, scs in sorted(hrow_to_spine_col.items()):
-            hrows.append(dict(hrow_col=hrc, spine_cols=scs))
+        for hrc, scs in sorted(hrow_to_spine_rcs.items()):
+            hrows.append(dict(hrow_col=hrc[1], hrow_row=hrc[0], spine_cols=[x[1] for x in scs]))
         gdb["hrows"] = hrows
+        print(gdb)
         save_db()
+        
 if __name__ == '__main__':
     fuzzloops.FuzzerMain(main)
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -e
+
 new_dir=${1:-db}
 mkdir ./${new_dir}
 pushd ${new_dir}
@@ -17,7 +19,7 @@ find "$SRC" -type d | while read -r dir; do
 done
 
 # Find all json files and recreate directory structure with symlinks
-find "$SRC" -type f -name '*.json' | while read -r file; do
+find "$SRC" -type f -name '*.json' ! -path "*/overlays.d/*" | while read -r file; do
     # Path relative to source root
     rel="${file#$SRC/}"
 

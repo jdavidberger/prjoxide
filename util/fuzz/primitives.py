@@ -437,6 +437,15 @@ pclkdiv = PrimitiveDefinition(
 dlldel = PrimitiveDefinition.parse_primitive_json("DLLDEL", value_sizes={"ADJUST": 9})
 dlldel.get_setting("ENABLE").enable_value = "ENABLED"
 
+wdt = PrimitiveDefinition(
+    "CONFIG_WDT_CORE",
+    mode="CONFIG_WDT_CORE",
+    settings=[
+        EnumSetting("WDTEN", ["DIS", "EN"], enable_value="EN"),
+        EnumSetting("WDTMODE", ["SINGLE", "CONTINUOUS"]),
+        #WordSetting("WDTVALUE", 32) # Doesnt like it? might have weird formatting?
+    ]
+)
 # Doesn't work right now -- seems optimimized out?
 # i2cfifo = PrimitiveDefinition.parse_primitive_json("I2CFIFO")
 # i2cfifo.get_setting("CR1GCEN").enable_value = "EN"

@@ -533,6 +533,37 @@ impl Bel {
         }
     }
 
+    pub fn make_wdt(_tiledata: &TileBitsDatabase) -> Bel {
+        /*
+        Wires look like this for the lifcl devices:
+
+        Node: JWDT_RST_CONFIG_WDT_CORE_CONFIG_WDT
+        Node: JWDT_CLK_CONFIG_WDT_CORE_CONFIG_WDT
+        Node: JCIBWDTRELOAD_CONFIG_WDT_CORE_CONFIG_WDT
+        */
+        let postfix = "CONFIG_WDT_CORE_CONFIG_WDT".to_string();
+        Bel {
+            name: "WDT".to_string(),
+            beltype: "WDT".to_string(),
+            pins: vec![
+                input!(&postfix, "WDT_CLK", "WDT clock input", -2, 0),
+                input!(&postfix, "WDT_RST", "WDT reset", -2, 0),
+                BelPin {
+                    name: "WDTRELOAD".to_string(),
+                    desc: "WDT reload".to_string(),
+                    dir: PinDir::INPUT,
+                    wire: RelWire {
+                        rel_x: -2,
+                        rel_y: 0,
+                        name: "JCIBWDTRELOAD_CONFIG_WDT_CORE_CONFIG_WDT".to_string()
+                    },
+                }
+            ],
+            rel_x: 0,
+            rel_y: 0,
+            z: 0
+        }
+    }
     pub fn make_iol(tiledata: &TileBitsDatabase, s: bool, z: usize) -> Bel {
         let ch = Z_TO_CHAR[z];
         let postfix = if s {
@@ -671,7 +702,9 @@ impl Bel {
     }
 }
 
-pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
+pub fn get_tile_bels(full_tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
+    // Tiletypes constructed from overlays are named like so: <tiletype>/<id>
+    let tiletype = full_tiletype.split("/").next().unwrap();
     let mut stt = tiletype;
     if tiletype.ends_with("_EVEN") || tiletype.ends_with("_ODD") {
         stt = &tiletype[0..tiletype.rfind('_').unwrap()];
@@ -817,6 +850,7 @@ pub fn get_tile_bels(tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Bel> {
                 "SIOLOGICB.GSR" => vec![Bel::make_iol(tiledata, true, 1)],
                 "IOLOGICA.GSR" => vec![Bel::make_iol(tiledata, false, 0)],
                 "IOLOGICB.GSR" => vec![Bel::make_iol(tiledata, false, 1)],
+                "TCONFIG_WDT_CORE31.WDTEN" | "CONFIG_WDT_CORE.WDTEN" => vec![Bel::make_wdt(tiledata)],
                 _ => vec![]
             }).map(|x| {
                 x.with_rel(bel_relative_location)

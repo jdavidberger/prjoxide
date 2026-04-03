@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::{env, fmt, fs};
 
 use std::fs::File;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use log::{debug, info, warn};
@@ -115,6 +116,7 @@ pub struct GlobalSpineData {
 #[derive(Deserialize, Serialize, Clone)]
 pub struct GlobalHrowData {
     pub hrow_col: usize,
+    pub hrow_row: usize,
     pub spine_cols: Vec<usize>,
 }
 
@@ -161,8 +163,8 @@ impl DeviceGlobalsData {
     pub fn is_hrow_loc(&self, x: usize, y: usize) -> bool {
         self.hrows.iter().any(|h| h.hrow_col == x) && self.spines.iter().any(|s| s.spine_row == y)
     }
-    pub fn hrow_sink_to_origin(&self, x: usize, y: usize) -> Option<(usize, usize)> {
-        match self
+    pub fn hrow_sink_to_origin(&self, x: usize, _y: usize) -> Option<(usize, usize)> {
+        self
             .hrows
             .iter()
             .find(|h| {
@@ -171,15 +173,7 @@ impl DeviceGlobalsData {
                     .any(|c| ((x as i32) - (*c as i32)).abs() < 3)
                     || (((x as i32) - (h.hrow_col as i32)).abs() < 3)
             })
-            .map(|h| h.hrow_col)
-        {
-            None => None,
-            Some(hrow_col) => self
-                .spines
-                .iter()
-                .find(|s| ((y as i32) - (s.spine_row as i32)).abs() <= 3)
-                .map(|s| (hrow_col, s.spine_row)),
-        }
+            .map(|h| (h.hrow_col, h.hrow_row))
     }
 }
 
@@ -502,7 +496,8 @@ impl TileBitsData {
                 self.tiletype, self.db.tile_configures_external_tiles, bel_relative_location
             );
         }
-        info!("Setting bel offset {} {:?}", self.tiletype, bel_relative_location);
+
+        debug!("Setting bel offset {} {:?}", self.tiletype, bel_relative_location);
 
         bel_relative_location.iter().for_each(
             |loc| { self.db.tile_configures_external_tiles.insert(loc.clone()); }
@@ -564,7 +559,7 @@ impl TileBitsData {
             // Connection already exists
             debug!("Connection {from} -> {to} already exists {}", self.tiletype);
         } else {
-            info!("Connection {from} -> {to} added {}", self.tiletype);
+            debug!("Connection {from} -> {to} added {}", self.tiletype);
             self.dirty = true;
             pc.push(FixedConnectionData {
                 from_wire: from.to_string(),
@@ -653,11 +648,16 @@ impl Database {
         let devices : DevicesDatabase = serde_json::from_str(&devices_json_buf).unwrap();
         let mut overlay_based_devices = HashSet::new();
         for (family, family_data) in devices.families.iter() {
-            for (device, _) in family_data.devices.iter() {
-                if data.get_file(format!("{family}/{device}/overlays.d").as_str()).is_some() {
-                    overlay_based_devices.insert((family.clone(), device.clone()));
+            let family_dir = data.get_dir(family);
+            family_dir.iter().for_each(|family_dir| {
+                for (device, _) in family_data.devices.iter() {
+                    let device_dir = family_dir.get_dir(format!("{}/{}", family, device));
+                    let overlays_dir = device_dir.map(|x| x.get_dir(format!("{}/{}/overlays.d", family, device))).flatten();
+                    if overlays_dir.is_some() {
+                        overlay_based_devices.insert((family.clone(), device.clone()));
+                    }
                 }
-            }
+            })
         }
 
         Database {
@@ -688,18 +688,54 @@ impl Database {
             }
         }
     }
-    // Get the content of a file
-    pub fn read_file(&self, path: &str) -> String {
+    pub fn files_in_dir(&self, path: &str) -> Option<Vec<String>> {
+        match &self.root {
+            Some(r) => {
+
+                let dir = PathBuf::from(r).join(path);
+
+                if dir.is_dir() {
+                    Some(
+                        fs::read_dir(dir).unwrap()
+                            .filter_map(Result::ok) // skip unreadable entries
+                            .filter(|p| { p.path().is_file() } )
+                            .map(|e| e.path().to_str().unwrap().to_string())
+                            .map(|f|f.strip_prefix(r).unwrap().to_string())
+                            .collect_vec()
+                    )
+                } else {
+                    None
+                }
+            }
+            None => {
+                Some(self.builtin.unwrap().get_dir(path)?.files().iter().map(|x| x.path().to_str().unwrap().to_string()).collect_vec())
+            }
+        }
+    }
+
+    pub fn read_file_option(&self, path: &str) -> Result<String, String> {
         match &self.root {
             Some(r) => {
                 let mut buf = String::new();
-                File::open(format!("{}/{}", r, path)).unwrap().read_to_string(&mut buf).unwrap();
-                buf
+                File::open(format!("{}/{}", r, path))
+                    .map_err(|e| e.to_string())?
+                    .read_to_string(&mut buf)
+                    .map_err(|e| e.to_string())?;
+                Ok(buf)
             }
             None => {
-                self.builtin.unwrap().get_file(path).unwrap().contents_utf8().unwrap().to_string()
+                Ok(self.builtin.unwrap().get_file(path)
+                    .ok_or(format!("Could not open {path} in builtin"))?
+                    .contents_utf8()
+                    .ok_or(format!("Could not decode {path} in builtin"))?
+                    .to_string())
             }
         }
+    }
+
+    // Get the content of a file
+    pub fn read_file(&self, path: &str) -> String {
+        self.read_file_option(path).unwrap_or_default()
     }
     // Both functions return a (family, name, data) 3-tuple
     pub fn device_by_name(&self, name: &str) -> Option<(String, String, DeviceData)> {
@@ -725,98 +761,110 @@ impl Database {
         None
     }
 
-    fn overlay_files(&self, family: &str, device: &str) -> Vec<PathBuf>{
-        let dir = PathBuf::from(self.root.as_ref().unwrap())
-            .join(family)
-            .join(device)
-            .join("overlays.d");
-
-        if dir.is_dir() {
-            fs::read_dir(dir).unwrap()
-                .filter_map(Result::ok) // skip unreadable entries
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.is_file()
-                        && p.extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| e.eq_ignore_ascii_case("json"))
-                        .unwrap_or(false)
-                })
-                .collect()
-        } else {
-            vec![]
-        }
+    fn overlay_files(&self, family: &str, device: &str) -> Option<Vec<String>> {
+        self.files_in_dir(format!("{}/{}/{}", family, device, "overlays.d").as_str())
     }
-    fn parse_overlays(&self, family: &str, device: &str) -> (BTreeMap<String, BTreeSet<String>>, BTreeMap<String, BTreeSet<String>>) {
-        let files = self.overlay_files(family, device);
+
+    fn parse_overlays(&self, family: &str, device: &str) -> Option<(BTreeMap<String, BTreeSet<String>>,
+                                                                    BTreeMap<String, BTreeSet<String>>)> {
+        let files = self.overlay_files(family, device)?;
 
         let mut root = {
             let mut root: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
             files.iter().for_each(|f|
-            {
-                let mut json_buf = String::new();
-                File::open(f).unwrap().read_to_string(&mut json_buf).unwrap();
+                {
+                    let json_buf = self.read_file(f);
 
-                let parsed: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> =
-                    serde_json::from_str(&json_buf)
-                        .map_err(|e| format!("Failed to parse overlays.json: {}", e)).unwrap();
+                    if json_buf.len() > 0 {
+                        let parsed: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> =
+                            serde_json::from_str(&json_buf)
+                                .map_err(|e| format!("Failed to parse overlays.json({:?}): {}", f, e)).unwrap();
 
-                for (k, inner_map) in parsed {
-                    let entry = root.entry(k).or_default();
+                        for (k, inner_map) in parsed {
+                            let entry = root.entry(k).or_default();
 
-                    for (inner_k, set) in inner_map {
-                        entry
-                            .entry(inner_k)
-                            .or_default()
-                            .extend(set);
+                            for (inner_k, set) in inner_map {
+                                entry
+                                    .entry(inner_k)
+                                    .or_default()
+                                    .extend(set);
+                            }
+                        }
+                    } else {
+                        warn!("Empty overlay found at {:?}", f);
                     }
-                }
-            });
+                });
 
             root
         };
 
-        (root.remove("overlays").unwrap_or(BTreeMap::new()),
-         root.remove("tiletypes").unwrap_or(BTreeMap::new()))
+        Some((root.remove("overlays").unwrap_or(BTreeMap::new()),
+              root.remove("tiletypes").unwrap_or(BTreeMap::new())))
     }
-    pub fn device_overlay_tiletypes(&mut self, family: &str, device: &str) -> Result<&BTreeMap<TileName, TileTypeName>, String> {
-        let key = (family.to_string(), device.to_string());
 
-        let (_, tiletypes) = self.parse_overlays(family, device);
+    fn parse_tile_to_overlays(&self, family: &str, device: &str) -> Option<BTreeMap<TileName, BTreeSet<TileTypeName>>> {
+        let (overlay_set_contents, overlay_set_to_tiles) = self.parse_overlays(family, device)?;
 
-        let tiletype_lookup = tiletypes.iter()
-            .flat_map(|(k, set)| set.iter().map(move |v| (v.clone(), k.clone())))
-            .try_fold(BTreeMap::new(), |mut acc, (v, k)| {
-                match acc.insert(v.clone(), k.clone()) {
-                    None => Ok(acc),
-                    Some(prev) => Err(format!(
-                        "Collision: '{}' belongs to both '{}' and '{}'",
-                        v, prev, k
-                    )),
+        let mut tile_to_overlays : BTreeMap<TileName, BTreeSet<TileTypeName>> = BTreeMap::new();
+
+        for (k, v) in overlay_set_to_tiles.iter() {
+            for tilename in v.iter() {
+                if !tile_to_overlays.contains_key(tilename) {
+                    tile_to_overlays.insert(tilename.clone(), BTreeSet::new());
                 }
-            })?;
 
-        self.overlay_tiletypes.insert(key.clone(), tiletype_lookup);
+                overlay_set_contents.get(k).iter().for_each(|overlays| {
+                    for overlay in overlays.iter() {
+                        tile_to_overlays.get_mut(tilename).unwrap().insert(overlay.clone());
+                    }
+                })
+            }
+        }
 
-        self.overlay_tiletypes.get(&key).ok_or(format!("Could not find overlay tile types for {family} {device}"))
+        Some(tile_to_overlays)
     }
+
+    fn parse_tile_to_synthetic_tiletypes(&self, family: &str, device: &str) -> Option<(BTreeMap<TileName, TileTypeName>, BTreeMap<TileTypeName, BTreeSet<TileTypeName>>)> {
+        let tiles_to_overlays = self.parse_tile_to_overlays(family, device)?;
+        let mut overlay_map: BTreeMap<TileTypeName, BTreeSet<TileTypeName>> = BTreeMap::new();
+        let mut tiles_map: BTreeMap<TileName, TileTypeName> = BTreeMap::new();
+
+        fn create_id(s: BTreeSet<TileTypeName>) -> String {
+            let prefix = s.iter().find(|x| !x.starts_with("overlay")).cloned().unwrap_or(String::new());
+            let mut hasher = DefaultHasher::default();
+            s.iter().sorted().join(" ").hash(&mut hasher);
+            format!("{}/{:x}", prefix, hasher.finish())
+        }
+
+        for (tilename, overlays) in tiles_to_overlays.iter() {
+            let id = create_id(overlays.clone());
+            if !overlay_map.contains_key(&id) {
+                overlay_map.insert(id.clone(), overlays.clone());
+            }
+            tiles_map.insert(tilename.clone(), id);
+        }
+
+        Some((
+            tiles_map,
+            overlay_map
+        ))
+    }
+
     pub fn overlays(&mut self) -> &HashMap<DeviceSpecifier, BTreeMap<TileTypeName, OverlayTiletype>> {
         if self._overlays.is_none() {
             let mut overlays = HashMap::new();
 
             for (family, family_data) in self.devices.families.iter() {
                 for (device, _) in family_data.devices.iter() {
+                    if let Some((_, tiletypes_to_overlays)) = self.parse_tile_to_synthetic_tiletypes(family, device) {
+                        let device_overlays = tiletypes_to_overlays.iter().map(|(name, contents)| {
+                            (name.clone(), OverlayTiletype {
+                                overlays: contents.clone()
+                            })
+                        }).collect();
 
-                    let (overlay_tiletypes, _) = self.parse_overlays(family, device);
-
-                    let device_overlays = overlay_tiletypes.iter().map(|(name, contents)| {
-                        (name.clone(), OverlayTiletype {
-                            overlays: contents.clone()
-                        })
-                    }).collect();
-
-                    overlays.insert((family.clone(), device.clone()), device_overlays);
-
+                        overlays.insert((family.clone(), device.clone()), device_overlays);
+                    }
                 }
             }
 
@@ -870,13 +918,11 @@ impl Database {
             let mut tg : DeviceTilegrid = serde_json::from_str(&tg_json_buf).unwrap();
 
             if self.overlay_based_devices.contains(&key) {
-
-                let device_overlay = self.device_overlay_tiletypes(family, device).unwrap();
-                for (tile, tile_data) in tg.tiles.iter_mut() {
-                    if let Some(tile_type_name) = device_overlay.get(tile) {
-                        tile_data.tiletype = tile_type_name.clone();
-                    } else {
-                        warn!("Could not find {tile} in overlays listing {device}");
+                if let Some((device_overlay, _)) = self.parse_tile_to_synthetic_tiletypes(family, device) {
+                    for (tile, tile_data) in tg.tiles.iter_mut() {
+                        if let Some(tile_type_name) = device_overlay.get(tile) {
+                            tile_data.tiletype = tile_type_name.clone();
+                        }
                     }
                 }
             }
@@ -963,11 +1009,14 @@ impl Database {
             info!("-> {family}");
             for (device, _) in family_data.devices.iter() {
                 info!("-> {family} {device}");
-                for file in other.overlay_files(family, device).iter() {
-                    let new_file = file.to_str().unwrap().replace(other.root.as_ref().unwrap().as_str(), self.root.as_ref().unwrap().as_str());
-                    info!("Copying {file:?} => {new_file}");
-                    fs::create_dir_all(Path::new(&new_file).parent().unwrap()).unwrap();
-                    fs::copy(file, new_file).unwrap();
+                if let Some(overlay_files) = other.overlay_files(family, device) {
+                    for file in overlay_files.iter() {
+                        let old_file = format!("{}/{}", other.root.as_ref().unwrap().as_str(), file);
+                        let new_file = format!("{}/{}", self.root.as_ref().unwrap().as_str(), file);
+                        info!("Copying {file:?} => {new_file}");
+                        fs::create_dir_all(Path::new(&new_file).parent().unwrap()).unwrap();
+                        fs::copy(old_file, new_file).unwrap();
+                    }
                 }
             }
         }
@@ -985,7 +1034,7 @@ impl Database {
             tile_configures_external_tiles : BTreeSet::new(),
         };
         let mut tile_bits = TileBitsData::new(tiletype, tile_bits_db);
-        info!("Merge {tiletype} {:?}", overlay.overlays);
+        debug!("Merge {tiletype} {:?}", overlay.overlays);
 
         let overlay_members : Vec<String> = overlay.overlays.clone().into_iter()
             .sorted_by(|x, y| {
@@ -993,7 +1042,7 @@ impl Database {
             }).collect();
 
         for layer in overlay_members {
-            info!("Merging {layer} into {tiletype}");
+            debug!("[{family}] Merging {layer} into {tiletype}");
             let overlay_bits = self.tile_bitdb(family, layer.as_str());
             tile_bits.merge(&overlay_bits.db)?;
         }

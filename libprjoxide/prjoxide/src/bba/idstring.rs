@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::bba::bbastruct::BBAStructs;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
+use log::{info};
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct IdString(usize);

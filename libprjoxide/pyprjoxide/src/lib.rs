@@ -55,6 +55,30 @@ impl Database {
         });
     }
 
+    pub fn add_denormalized_conn(&mut self, base: &Chip, tile: &str, from_wire: &str, to_wire: &str, py: Python) -> PyResult<()> {
+        py.allow_threads(|| {
+            let tile_spec : Vec<&str> = tile.split(",").collect();
+            let tile_name = tile_spec[0];
+            let tile_data = base.c.tile_by_name(tile_name).unwrap();
+            let tile_type_or_overlay = if tile_spec.len() == 1 {
+                &tile_data.tiletype
+            } else {
+                tile_spec[1]
+            };
+            let norm_from_wire = wires::normalize_wire(&base.c, tile_data, from_wire);
+            let norm_to_wire = wires::normalize_wire(&base.c, tile_data, to_wire);
+
+            let tile_db = self.db.tile_bitdb(base.c.family.as_str(), tile_type_or_overlay);
+
+            tile_db.add_conn(
+                &norm_from_wire,
+                &norm_to_wire
+            );
+
+            Ok(())
+        })
+    }
+
     pub fn add_pip(&mut self, base: &Chip, tile: &str, from_wire: &str, to_wire: &str, bits : BTreeSet<(usize, usize, bool)>, py: Python) -> PyResult<()> {
         py.allow_threads(|| {
             let tile_spec : Vec<&str> = tile.split(",").collect();

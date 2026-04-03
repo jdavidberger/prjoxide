@@ -319,6 +319,23 @@ def generate_mux_deltas(device_tiles, to_wire, from_wire_deltas, remove_constant
     device = device_tiles.device
     chip = device_tiles.chip()
 
+    if len(from_wire_deltas) == 1 and len(list(from_wire_deltas.values())[0][1]) == 0:
+        from_wire = list(from_wire_deltas.keys())[0]
+        tile = rel_tile = list(from_wire_deltas.values())[0][0]
+        nfrom_wire = tiles.resolve_actual_node(device, from_wire, rel_tile)
+        nto_wire = tiles.resolve_actual_node(device, to_wire, rel_tile)
+
+        norm_from_wire, norm_to_wire = chip.normalize_wire(rel_tile.split(",")[0], nfrom_wire), \
+            chip.normalize_wire(rel_tile.split(",")[0], nto_wire)
+
+        logging.debug(f"Adding mux pip {tile} {nfrom_wire} -> {nto_wire} empty_set")
+        transaction_log.info(
+            f"add_pip {device} {tile}: {nfrom_wire} -> {nto_wire} {norm_from_wire} -> {norm_to_wire} Bits: empty set")
+
+        yield tile, nfrom_wire, nto_wire, set()
+
+        return
+
     consistent_delta = None
     base_delta = None
     for (from_wire, (rel_tile, delta)) in from_wire_deltas.items():
@@ -497,6 +514,9 @@ async def fuzz_interconnect_sinks_across_span(
     connected_arcs = [p for p in connected_arcs
                       if any([tiles.get_rc_from_name(device, w) == rc for w in p])]
 
+    for arc in connected_arcs:
+        transaction_log.info(f"add_conn {device} {tiletype_or_overlay}: {representative_tile} -> {arc}")
+
     register_tile_connections(config.device, tiletype_or_overlay, representative_tile, sorted(connected_arcs))
 
     chip = fuzzconfig.FuzzConfig.standard_chip(device)
@@ -510,8 +530,9 @@ async def fuzz_interconnect_sinks_across_span(
                 nto_wire = fix_name(to_wire)
 
                 with fuzzconfig.db_lock() as db:
-                    logging.debug(f"Adding pip {representative_tile} {nfrom_wire} -> {nto_wire} for empty set")
-                    db.add_pip(chip, representative_tile + tile_suffix, nfrom_wire, nto_wire, set())
+                    logging.debug(f"Adding conn {representative_tile} {nfrom_wire} -> {nto_wire} for empty set")
+                    transaction_log.info(f"Adding conn {representative_tile} {nfrom_wire} -> {nto_wire} for empty set")
+                    db.add_denormalized_conn(chip, representative_tile + tile_suffix, nfrom_wire, nto_wire)
         else:
             logging.warning(f"No modified tiles for {representative_tile} running no designs for interconnect.")
 
@@ -597,7 +618,8 @@ async def fuzz_interconnect_sinks_across_span(
                                         chip.normalize_wire(changed_tile.split(",")[0], nto_wire)
 
                                     logging.debug(f"Adding pip {changed_tile}({tile}) {nfrom_wire} -> {nto_wire} {delta} from {prefix}")
-                                    transaction_log.info(f"{bitstream.vfiles} add_pip {device} {changed_tile}({tile}): {nfrom_wire} -> {nto_wire} {norm_from_wire} -> {norm_to_wire} Bits: {delta}")
+                                    transaction_log.info(
+                                        f"{bitstream.vfiles} add_pip {device} {changed_tile}({tile}): {nfrom_wire} -> {nto_wire} {norm_from_wire} -> {norm_to_wire} Bits: {delta}")
                                     if changed_tile == tile:
                                         changed_tile = changed_tile + tile_suffix
                                     db.add_pip(chip, changed_tile, nfrom_wire, nto_wire, set(delta))
@@ -633,13 +655,21 @@ async def fuzz_interconnect_sinks_across_span(
 
     with (fuzzconfig.db_lock() as db):
         for anon_pip, ((from_wire, to_wire), tile) in empty_deltas.items():
+            nfrom_wire = fix_name(from_wire)
+            nto_wire = fix_name(to_wire)
+
+            transaction_log.info(
+                f"add_conn {device} {tile}: {nfrom_wire} ")
+
             if anon_pip in anon_pip_delta_tiles:
-                nfrom_wire = fix_name(from_wire)
-                nto_wire = fix_name(to_wire)
                 (delta_tile, delta) = anon_pip_delta_tiles[0]
                 if delta_tile == tile:
                     delta_tile = delta_tile + tile_suffix
-                db.add_pip(chip, delta_tile, nfrom_wire, nto_wire, set())
+                db.add_denormalized_conn(chip, delta_tile, nfrom_wire, nto_wire)
+            else:
+                delta_tile = tile + tile_suffix
+                db.add_denormalized_conn(chip, delta_tile, nfrom_wire, nto_wire)
+
 
         for to_wire, from_wire_deltas in mux_deltas.items():
             (rel_tile, delta) = list(from_wire_deltas.values())[0]

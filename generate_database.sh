@@ -1,10 +1,12 @@
 #!/bin/bash -i
 
+set -ex
 set -o allexport
 
 . user_environment.sh
 
 fuzz=false
+fuzz_time=false
 merge=false
 git_commit=false
 
@@ -56,8 +58,8 @@ run_fuzzer() {
 
           if [ "$git_commit" = true ] ; then
             pushd ../database
-            git add **.ron
-	    git add **/overlays.d/*.json
+            git add **.ron | true
+	    git add **/overlays.d/*.json | true
             git commit -m "Incorporating database changes from $dir"
             popd
           fi

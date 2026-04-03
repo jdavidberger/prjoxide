@@ -262,11 +262,12 @@ impl<'a> BBAStructs<'a> {
     pub fn global_hrow_info(
         &mut self,
         hrow_col: usize,
+        hrow_row: usize,
         num_spine_cols: usize,
         spine_cols_ref: &str,
     ) -> Result<()> {
         self.out.u16_val(hrow_col.try_into().unwrap())?;
-        self.out.u16_val(0)?; // padding
+        self.out.u16_val(hrow_row.try_into().unwrap())?;
         self.out.ref_slice(spine_cols_ref, num_spine_cols)?;
         Ok(())
     }

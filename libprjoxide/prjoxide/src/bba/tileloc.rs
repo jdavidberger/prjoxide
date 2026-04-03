@@ -12,7 +12,8 @@ use itertools::Itertools;
 use std::collections::{BTreeSet, HashMap};
 use std::convert::TryInto;
 use std::iter::FromIterator;
-use log::warn;
+
+use log::{debug, info, warn};
 use regex::Regex;
 use crate::bba::tiletype::Neighbour::RelXY;
 
@@ -43,7 +44,7 @@ impl TileLocation {
             .filter(|tt| {
                 let has_routing = tts.get(tt).unwrap().has_routing();
                 if !has_routing {
-                    println!("Warning: {tt} has no routing and has been omitted. Please check it's PIPs and connections.");
+                    warn!("{tt} has no routing and has been omitted. Please check it's PIPs and connections.");
                 }
                 has_routing
             })
@@ -103,7 +104,7 @@ impl LocationGrid {
             tiles: locs,
             glb: globals.clone(),
             iodb: iodb,
-	    device: ch.device.to_string()
+            device: ch.device.to_string()
         }
     }
     pub fn get(&self, x: usize, y: usize) -> Option<&TileLocation> {
@@ -167,16 +168,16 @@ impl LocationGrid {
             Neighbour::Spine => {
                 let origin = self.glb.spine_sink_to_origin(x, y);
                 if origin.is_none() {
-                    println!("WARNING: Branch at {x} {y} can not resolve the spine origin")
+                    warn!("Branch at {x} {y} can not resolve the spine origin")
                 }
                 origin
             },
             Neighbour::HRow => {
                 let origin = self.glb.hrow_sink_to_origin(x, y);
                 if origin.is_none() {
-                    println!("WARNING: Spine at {x} {y} can not resolve the HRow origin");
+                    warn!("Spine at {x} {y} can not resolve the HRow origin");
                 } else {
-                    println!("INFO: Spine at {x} {y} resolved to {origin:?}");
+                    debug!("Spine at {x} {y} resolved to {origin:?}");
                 }
                 origin
             },
@@ -312,6 +313,7 @@ impl LocationGrid {
         for (i, hr) in self.glb.hrows.iter().enumerate() {
             out.global_hrow_info(
                 hr.hrow_col,
+                hr.hrow_row,
                 hr.spine_cols.len(),
                 &format!("d{}_hr{}_sc", device_idx, i),
             )?;
@@ -543,7 +545,21 @@ impl LocationTypes {
                     }
                 }
             }
-            self.types.value_mut(i).wires = wires;
+            // This is a hack to position global and global-like wires near the beginning of the list,
+            // so those indices are shared for the most part for tiletypes which are very similar
+            let f = |x:&IdString| -> (i32, &str) {
+                let name = _ids.str(*x);
+                let parts = name.split(":").collect_vec();
+
+                (match parts[0] {
+                    "G" => 0,
+                    "HROW" => 1,
+                    _ if parts[0].starts_with("HPRX") => 2,
+                    "BRANCH" => 3,
+                    _ => 10 - (parts.len() as i32)
+                }, name)
+            };
+            self.types.value_mut(i).wires = wires.iter().cloned().sorted_by_key(f).collect();
         }
         // Import the n-n arcs
         let mut _arcs_count = 0;
