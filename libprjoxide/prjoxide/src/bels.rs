@@ -845,7 +845,6 @@ pub fn get_tile_bels(full_tiletype: &str, tiledata: &TileBitsDatabase) -> Vec<Be
                 "PIOA.SEIO18.BASE_TYPE" => vec![Bel::make_seio18(0)],
                 "PIOB.SEIO18.BASE_TYPE" => vec![Bel::make_seio18(1)],
                 "PIOA.DIFFIO18.BASE_TYPE" => vec![Bel::make_diffio18()],
-                "PIOB.DIFFIO18.BASE_TYPE" => vec![Bel::make_diffio18()],
                 "SIOLOGICA.GSR" => vec![Bel::make_iol(tiledata, true, 0)],
                 "SIOLOGICB.GSR" => vec![Bel::make_iol(tiledata, true, 1)],
                 "IOLOGICA.GSR" => vec![Bel::make_iol(tiledata, false, 0)],

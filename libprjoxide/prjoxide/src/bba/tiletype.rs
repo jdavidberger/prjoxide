@@ -2,8 +2,6 @@ use crate::bba::idstring::*;
 use crate::bels::*;
 use crate::database::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use itertools::Itertools;
-use log::info;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
 pub enum BranchSide {

@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::convert::TryInto;
 use std::iter::FromIterator;
 
-use log::{debug, info, warn};
+use log::{debug, warn};
 use regex::Regex;
 use crate::bba::tiletype::Neighbour::RelXY;
 
