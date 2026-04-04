@@ -50,6 +50,7 @@ def create_configs_for_device(device):
 
     configs = defaultdict(list)
     for (key, value) in config_items:
+        logging.info(f"[{device}] {key}")
         configs[key].append(value)
 
     return configs

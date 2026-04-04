@@ -153,11 +153,32 @@ class PrimitiveDefinition(object):
             name = s.get("Name", s.get("Attribute"))
 
             if values is None:
-                logging.warn(f"No values for {primitive}")
+                logging.warning(f"No values for {primitive}")
                 return None
 
-            if len(values) == 1 and name in value_sizes:
-                return WordSetting(name, value_sizes[name], desc=name, default=int(values[0]))
+            if len(values) == 1:
+                word_size = None
+                number_formatter = None
+                try:
+                    if values[0].startswith("0b"):
+                        word_size = len(values[0].split("0b")[-1])
+                        default_value = 0
+                        number_formatter = WordSetting.binary_formatter
+                    else:
+                        default_value = int(values[0])
+                except:
+                    default_value = 0
+                    logging.error(f"Could not parse {values[0]} for {name} into default value")
+
+                if word_size is None:
+                    word_size = value_sizes.get(name)
+                if word_size is None:
+                    word_size = value_sizes.get("")
+                if word_size is None:
+                    logging.warning(f"Need size annotation for {name}")
+                    return None
+
+                return WordSetting(name, word_size, desc=name, default=default_value, number_formatter=number_formatter)
 
             if values[0].replace("`", "").startswith("0b"):
                 bit_cnt = len(values[0].replace("`", "").split(" ")[0].split("0b")[-1])
@@ -336,7 +357,7 @@ PrimitiveDefinition(
     ]
 )
 
-pll_core = PrimitiveDefinition.parse_primitive_json("PLL", core_suffix=True)
+pll_core = PrimitiveDefinition.parse_primitive_json("PLL", core_suffix=True, value_sizes={"": 9, "DYN_SEL": 3})
 for s in pll_core.settings:
     if s.name.startswith("ENCLK_"):
         s.enable_value = "ENABLED"

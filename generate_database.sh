@@ -59,6 +59,7 @@ run_fuzzer() {
           if [ "$git_commit" = true ] ; then
             pushd ../database
             git add **.ron | true
+            git add **.json | true	    
 	    git add **/overlays.d/*.json | true
             git commit -m "Incorporating database changes from $dir"
             popd

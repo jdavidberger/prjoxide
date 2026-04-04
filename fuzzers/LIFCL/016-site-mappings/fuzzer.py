@@ -15,7 +15,7 @@ import radiant
 import tiles
 from fuzzconfig import FuzzConfig
 from interconnect import fuzz_interconnect_sinks
-
+from fuzzloops import wrap_future
 import database
 
 ###
@@ -24,10 +24,6 @@ import database
 ###
 
 mapped_sites = set()
-
-async def wrap_future(f):
-    if f is not None:
-        return await asyncio.wrap_future(f)
 
 # These tiles overlap many sites and are not the main site tiles
 overlapping_tile_types = set(["CIB", "MIB_B_TAP", "TAP_CIB"] +
@@ -40,6 +36,8 @@ def get_site_tiles(device, site):
                   tile.split(":")[1] not in overlapping_tile_types]
 
     return site_tiles
+
+semaphore = asyncio.Semaphore(16)
 
 # Pull from a bitstream baseline delta the main tile and IP changes
 def find_relevant_tiles_from_bitstream(device, site, active_bitstream):
@@ -127,7 +125,7 @@ async def map_primitive_settings(device, ts, site, site_tiles, site_type, ip_val
         fuzz_word_setting = nonrouting.fuzz_word_setting
 
     async def map_mode(mode):
-        logging.info(f"====== {mode.mode} : {site}:{site_type} IP: {len(ip_values)} ==========")
+        logging.info(f"====== {device} {mode.mode} : {site}:{site_type} IP: {len(ip_values)} ==========")
         related_tiles = (ts + site_tiles)
         cfg = FuzzConfig(job=f"config/{site_type}/{site}/{mode.mode}", device=device, sv="primitive.v", tiles= related_tiles if len(ip_values) == 0 else [f"{site}:{site_type}"])
 
@@ -186,6 +184,7 @@ async def map_primitive_settings(device, ts, site, site_tiles, site_type, ip_val
         }
 
         async def map_mode_setting(setting):
+
             mark_relative_to = None
             if site_tiles[0] != ts[0]:
                 mark_relative_to = site_tiles[0]
@@ -295,8 +294,9 @@ async def run_for_device(device, executor = None):
             )
 
             logging.debug(f"Site key: {site_key}")
-            if mapped_sites in site_key:
+            if site_key in mapped_sites:
                 continue
+            logging.info(f"New site key: {site_key}")
 
             mapped_sites.add(site_key)
             tg.create_task(per_site(site, site_info, (driving_tiles, site_tiles, ip_values), executor))

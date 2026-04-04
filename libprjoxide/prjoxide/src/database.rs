@@ -601,6 +601,9 @@ pub struct Database {
     overlay_tiletypes: HashMap<DeviceSpecifier, BTreeMap<TileName, TileTypeName>>,
 }
 
+pub fn prjoxide_use_overlays() -> bool {
+    !env::var("PRJOXIDE_DISABLE_OVERLAYS").is_ok()
+}
 impl Database {
     pub fn new(root: &str) -> Database {
         let mut devices_json_buf = String::new();
@@ -615,7 +618,7 @@ impl Database {
         let devices : DevicesDatabase = serde_json::from_str(&devices_json_buf).unwrap();
         let mut overlay_based_devices = HashSet::new();
 
-        if !env::var("PRJOXIDE_DISABLE_OVERLAYS").is_ok() {
+        if prjoxide_use_overlays() {
             for (family, family_data) in devices.families.iter() {
                 for (device, _) in family_data.devices.iter() {
                     if Path::new(format!("{root}/{family}/{device}/overlays.d").as_str()).exists() {
@@ -647,17 +650,19 @@ impl Database {
 
         let devices : DevicesDatabase = serde_json::from_str(&devices_json_buf).unwrap();
         let mut overlay_based_devices = HashSet::new();
-        for (family, family_data) in devices.families.iter() {
-            let family_dir = data.get_dir(family);
-            family_dir.iter().for_each(|family_dir| {
-                for (device, _) in family_data.devices.iter() {
-                    let device_dir = family_dir.get_dir(format!("{}/{}", family, device));
-                    let overlays_dir = device_dir.map(|x| x.get_dir(format!("{}/{}/overlays.d", family, device))).flatten();
-                    if overlays_dir.is_some() {
-                        overlay_based_devices.insert((family.clone(), device.clone()));
+        if prjoxide_use_overlays() {
+            for (family, family_data) in devices.families.iter() {
+                let family_dir = data.get_dir(family);
+                family_dir.iter().for_each(|family_dir| {
+                    for (device, _) in family_data.devices.iter() {
+                        let device_dir = family_dir.get_dir(format!("{}/{}", family, device));
+                        let overlays_dir = device_dir.map(|x| x.get_dir(format!("{}/{}/overlays.d", family, device))).flatten();
+                        if overlays_dir.is_some() {
+                            overlay_based_devices.insert((family.clone(), device.clone()));
+                        }
                     }
-                }
-            })
+                })
+            }
         }
 
         Database {
@@ -854,16 +859,18 @@ impl Database {
         if self._overlays.is_none() {
             let mut overlays = HashMap::new();
 
-            for (family, family_data) in self.devices.families.iter() {
-                for (device, _) in family_data.devices.iter() {
-                    if let Some((_, tiletypes_to_overlays)) = self.parse_tile_to_synthetic_tiletypes(family, device) {
-                        let device_overlays = tiletypes_to_overlays.iter().map(|(name, contents)| {
-                            (name.clone(), OverlayTiletype {
-                                overlays: contents.clone()
-                            })
-                        }).collect();
+            if prjoxide_use_overlays() {
+                for (family, family_data) in self.devices.families.iter() {
+                    for (device, _) in family_data.devices.iter() {
+                        if let Some((_, tiletypes_to_overlays)) = self.parse_tile_to_synthetic_tiletypes(family, device) {
+                            let device_overlays = tiletypes_to_overlays.iter().map(|(name, contents)| {
+                                (name.clone(), OverlayTiletype {
+                                    overlays: contents.clone()
+                                })
+                            }).collect();
 
-                        overlays.insert((family.clone(), device.clone()), device_overlays);
+                            overlays.insert((family.clone(), device.clone()), device_overlays);
+                        }
                     }
                 }
             }

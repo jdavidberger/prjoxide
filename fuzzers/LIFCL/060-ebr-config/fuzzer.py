@@ -3,7 +3,7 @@ import asyncio
 from fuzzconfig import FuzzConfig
 import nonrouting
 import fuzzloops
-import re
+from fuzzloops import wrap_future
 
 configs = [
     ("EBR_CORE_R28C26", "EBR0", FuzzConfig(job="EBRMODE0", device="LIFCL-40", sv="../shared/empty_40.v", tiles=["CIB_R29C26:MIB_EBR", "CIB_R29C27:EBR_1", "CIB_R29C28:EBR_2"])),
